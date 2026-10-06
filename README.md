@@ -47,3 +47,15 @@ In `omaha_config.py`:
 - **Reuse results or calculate if absent:** `RUN_MODE = "AUTO"`.
 
 Keep your logger unchanged. No hard-coded project path is needed in the scripts.
+
+## Code style and checks
+
+Formatting and basic Pyright/Pylance type-check settings live in `pyproject.toml`.
+To format, lint, and test with ordinary Python and NumPy installed:
+
+```sh
+python -m pip install ruff==0.16.10
+ruff format .
+ruff check .
+python -m unittest discover -s tests -q
+```
