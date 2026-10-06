@@ -1,0 +1,36 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Blender scenes, backups, and generated renders
+*.blend
+*.blend[0-9]*
+/renders/
+/output/
+/Blender_Omaha_V3_Output/
+
+# Downloaded datasets and temporary files
+/cache/
+/Blender_Omaha_V3_Cache/
+*.part
+*.tmp
+*.log
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
