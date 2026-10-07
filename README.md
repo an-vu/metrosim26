@@ -13,12 +13,9 @@ Defaults: full Omaha/Council Bluffs area, 2026–2076, 16 simulation workers, an
 Open **PowerShell** and run:
 
 ```powershell
-Set-Location "C:\Users\anvu1\Desktop\urban-generator"
-$blenderPython = Get-ChildItem "C:\Program Files (x86)\Steam\steamapps\common\Blender\*\python\bin\python.exe" -File |
-    Sort-Object FullName -Descending |
-    Select-Object -First 1 -ExpandProperty FullName
-if (-not $blenderPython) { throw "Bundled Python not found; check the Blender installation folder." }
-& $blenderPython .\prefetch_omaha_data.py --full
+& "C:\Program Files (x86)\Steam\steamapps\common\Blender\5.2\python\bin\python.exe" `
+    "C:\Users\anvu1\Desktop\Blender Generator\prefetch_omaha_data.py" `
+    --full
 ```
 
 Adjust the folder paths if needed. Alternatively, with ordinary Python and NumPy installed:
@@ -27,7 +24,10 @@ Adjust the folder paths if needed. Alternatively, with ordinary Python and NumPy
 python .\prefetch_omaha_data.py --full
 ```
 
-Wait for **`CACHE READY FOR BLENDER`**. If interrupted or a download fails, rerun the same command; completed files are reused. The cache is stored in `Documents\Blender_Omaha_V3_Cache`.
+Wait for **`CACHE READY FOR BLENDER`**. The downloader rotates through the main,
+Private Coffee, and Kumi Overpass endpoints automatically. If interrupted or a download
+fails, rerun the same command; completed files are reused. The cache is stored in
+`Documents\Blender_Omaha_V3_Cache`.
 
 ## 2. Run inside Blender
 

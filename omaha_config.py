@@ -39,10 +39,12 @@ SUBCELL_SAMPLES = 8  # Fraction estimates only; placement uses polygon checks.
 
 DATA_MODE = "OFFLINE"  # Blender is always offline; prefetch explicitly enables acquisition.
 DOWNLOAD_WORKERS = 1  # Network requests are sequential; CPU_WORKERS is unrelated.
-OVERPASS_URL = (
-    "https://overpass.private.coffee/api/interpreter"  # Retain the local endpoint override.
-)
-OVERPASS_FALLBACK_URLS = []  # Optional explicit fallbacks; actual sources are recorded.
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_FALLBACK_URLS = [
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
+DOWNLOAD_ATTEMPT_TIMEOUT = 300  # Hard wall-clock limit for a complete HTTP attempt.
 
 LODES_YEAR = 2023
 LODES_VERSION = "LODES8"
@@ -153,6 +155,7 @@ def make_config(preview=None):
         "data_mode": DATA_MODE,
         "download_workers": DOWNLOAD_WORKERS,
         "download_timeout": 240,
+        "download_attempt_timeout": DOWNLOAD_ATTEMPT_TIMEOUT,
         "download_attempts": 3,
         "overpass_url": OVERPASS_URL,
         "overpass_fallback_urls": list(OVERPASS_FALLBACK_URLS),
@@ -184,7 +187,11 @@ def validate_config(cfg):
         raise ValueError("osm_tiles must contain two positive integers.")
     if cfg.get("download_workers", 1) != 1:
         raise ValueError("Data acquisition is sequential: DOWNLOAD_WORKERS must be 1.")
-    if int(cfg.get("download_attempts", 3)) < 1 or cfg.get("download_timeout", 240) <= 0:
+    if (
+        int(cfg.get("download_attempts", 3)) < 1
+        or cfg.get("download_timeout", 240) <= 0
+        or cfg.get("download_attempt_timeout", 300) <= 0
+    ):
         raise ValueError("Download attempts and timeout must be positive.")
     if any(cfg.get(key, 30) < 0 for key in ("download_backoff_initial", "download_backoff_max")):
         raise ValueError("Download backoff delays cannot be negative.")
@@ -238,6 +245,7 @@ def simulation_config(cfg):
         "download_workers",
         "download_timeout",
         "download_attempts",
+        "download_attempt_timeout",
         "vertical_exaggeration",
         "render_samples",
         "preview_samples",

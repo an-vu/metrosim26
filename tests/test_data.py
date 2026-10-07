@@ -8,9 +8,12 @@ import io
 import json
 import shutil
 import socket
+import socketserver
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
 from email.message import Message
@@ -52,7 +55,12 @@ class AcquisitionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.cfg = config.make_config(preview=True)
-        self.cfg.update(cache_dir=self.temp.name, download_attempts=1, data_mode="OFFLINE")
+        self.cfg.update(
+            cache_dir=self.temp.name,
+            download_attempts=1,
+            download_attempt_timeout=0,
+            data_mode="OFFLINE",
+        )
         self.output = contextlib.redirect_stdout(io.StringIO())
         self.output.__enter__()
         self.addCleanup(self.output.__exit__, None, None, None)
@@ -64,6 +72,15 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(full["end_year"], 2076)
         self.assertEqual(full["cpu_workers"], 16)
         self.assertEqual(full["download_workers"], 1)
+        self.assertEqual(full["download_attempt_timeout"], 300)
+        self.assertEqual(
+            [full["overpass_url"], *full["overpass_fallback_urls"]],
+            [
+                "https://overpass-api.de/api/interpreter",
+                "https://overpass.private.coffee/api/interpreter",
+                "https://overpass.kumi.systems/api/interpreter",
+            ],
+        )
         self.assertEqual(len(data.osm_inputs(full)), 64)
         self.assertEqual(len(data.expected_inputs(full)), 70)
         original = [s.path for s in data.expected_inputs(self.cfg)]
@@ -262,6 +279,34 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(spec.path.read_bytes(), b"old invalid cache")
         self.assertEqual(list(spec.path.parent.glob("*.part")), [])
 
+    def test_hard_attempt_timeout_terminates_a_blocked_download_process(self):
+        release = threading.Event()
+
+        class HangingHandler(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.recv(4096)
+                release.wait(10)
+
+        class Server(socketserver.ThreadingTCPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+
+        with Server(("127.0.0.1", 0), HangingHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            endpoint = f"http://127.0.0.1:{server.server_address[1]}/interpreter"
+            target = Path(self.temp.name) / "blocked.part"
+            cfg = dict(self.cfg, download_timeout=30, download_attempt_timeout=0.25)
+            started = time.monotonic()
+            try:
+                with self.assertRaisesRegex(data.DownloadAttemptError, "hard wall-clock timeout"):
+                    data._download_attempt_with_deadline(endpoint, None, target, cfg)
+            finally:
+                release.set()
+                server.shutdown()
+                thread.join(2)
+            self.assertLess(time.monotonic() - started, 5)
+
     def test_receipt_does_not_hide_changed_bytes_or_corruption(self):
         populate(self.cfg)
         self.assertTrue(data.prefetch_data(self.cfg))
@@ -294,12 +339,11 @@ class AcquisitionTests(unittest.TestCase):
 
     def test_keyboard_interrupt_keeps_completed_inputs_and_removes_partial(self):
         spec = data.osm_inputs(self.cfg)[0]
-
-        class Interrupted(Response):
-            def read(self, size=-1):
-                raise KeyboardInterrupt()
-
-        with patch.object(data.urllib.request, "urlopen", return_value=Interrupted(b"")):
+        with patch.object(
+            data,
+            "_download_attempt_with_deadline",
+            side_effect=KeyboardInterrupt(),
+        ):
             self.assertEqual(prefetch.main(["--preview", "--cache-dir", self.temp.name]), 130)
         self.assertFalse(spec.path.exists())
         self.assertEqual(list(Path(self.temp.name).rglob("*.part")), [])

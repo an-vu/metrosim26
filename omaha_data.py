@@ -8,6 +8,7 @@ import hashlib
 import http.client
 import json
 import math
+import multiprocessing
 import os
 import tempfile
 import time
@@ -316,19 +317,138 @@ def require_input_cache(cfg):
 
 
 def _retry_delay(error, attempt, cfg):
-    if isinstance(error, urllib.error.HTTPError) and error.headers:
+    value = getattr(error, "retry_after", None)
+    if value is None and isinstance(error, urllib.error.HTTPError) and error.headers:
         value = error.headers.get("Retry-After")
-        if value:
+    if value:
+        try:
+            return max(0.0, float(value))
+        except ValueError:
             try:
-                return max(0.0, float(value))
-            except ValueError:
-                try:
-                    return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
-                except (TypeError, ValueError, OverflowError):
-                    pass
+                return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
+            except (TypeError, ValueError, OverflowError):
+                pass
     return min(
         float(cfg.get("download_backoff_max", 300)),
         float(cfg.get("download_backoff_initial", 30)) * 2**attempt,
+    )
+
+
+class DownloadAttemptError(OSError):
+    """A serializable HTTP-attempt failure reported by a disposable process."""
+
+    def __init__(self, message, *, error_type="OSError", http_code=None, retry_after=None):
+        super().__init__(message)
+        self.error_type = error_type
+        self.http_code = http_code
+        self.retry_after = retry_after
+
+
+def _download_once(endpoint, post_data, temp_path, socket_timeout):
+    request = urllib.request.Request(
+        endpoint,
+        data=post_data,
+        headers={"User-Agent": "OmahaUrbanSimulation/3 (local research visualization)"},
+    )
+    with urllib.request.urlopen(request, timeout=socket_timeout) as response:
+        source_url = response.geturl()
+        with open(temp_path, "wb") as handle:
+            while True:
+                block = response.read(1024 * 1024)
+                if not block:
+                    break
+                handle.write(block)
+    return source_url
+
+
+def _download_attempt_worker(endpoint, post_data, temp_path, socket_timeout, sender):
+    """Child target: its process can be terminated even during a blocked socket read."""
+    try:
+        source_url = _download_once(endpoint, post_data, temp_path, socket_timeout)
+        sender.send({"ok": True, "source_url": source_url})
+    except BaseException as exc:
+        headers = getattr(exc, "headers", None)
+        sender.send(
+            {
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+                "http_code": getattr(exc, "code", None),
+                "retry_after": headers.get("Retry-After") if headers else None,
+            }
+        )
+    finally:
+        sender.close()
+
+
+def _download_attempt_with_deadline(endpoint, post_data, temp_path, cfg):
+    socket_timeout = float(cfg.get("download_timeout", 240))
+    hard_timeout = float(cfg.get("download_attempt_timeout", 300))
+    if hard_timeout <= 0:  # Used only by isolated unit tests with mocked HTTP responses.
+        return _download_once(endpoint, post_data, temp_path, socket_timeout)
+
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_download_attempt_worker,
+        args=(endpoint, post_data, str(temp_path), socket_timeout, sender),
+        daemon=True,
+    )
+    process.start()
+    sender.close()
+    try:
+        process.join(hard_timeout)
+    except BaseException:
+        if process.is_alive():
+            process.terminate()
+            process.join(10)
+        if process.is_alive() and hasattr(process, "kill"):
+            process.kill()
+            process.join()
+        receiver.close()
+        process.close()
+        raise
+    if process.is_alive():
+        process.terminate()
+        process.join(10)
+        if process.is_alive() and hasattr(process, "kill"):
+            process.kill()
+            process.join()
+        receiver.close()
+        process.close()
+        raise DownloadAttemptError(
+            f"hard wall-clock timeout after {hard_timeout:g} seconds",
+            error_type="HardTimeout",
+        )
+    exit_code = process.exitcode
+    try:
+        result = receiver.recv() if receiver.poll() else None
+    finally:
+        receiver.close()
+        process.close()
+    if not result:
+        raise DownloadAttemptError(
+            f"download process exited without a result (exit code {exit_code})",
+            error_type="ChildProcessError",
+        )
+    if not result["ok"]:
+        raise DownloadAttemptError(
+            result["message"],
+            error_type=result["error_type"],
+            http_code=result["http_code"],
+            retry_after=result["retry_after"],
+        )
+    return result["source_url"]
+
+
+def _endpoint_name(url):
+    return urllib.parse.urlparse(url).netloc or url
+
+
+def _attempt_error_text(error):
+    code = getattr(error, "http_code", None) or getattr(error, "code", None)
+    return (
+        f"HTTP {code}" if code else f"{getattr(error, 'error_type', type(error).__name__)}: {error}"
     )
 
 
@@ -358,30 +478,16 @@ def _download_cached(spec, cfg):
     for attempt in range(attempts):
         temp_path = None
         endpoint = endpoints[attempt % len(endpoints)]
+        endpoint_name = _endpoint_name(endpoint)
+        started = time.monotonic()
         try:
-            print(
-                f"  downloading {spec.label}, attempt {attempt + 1}/{attempts}: {endpoint}",
-                flush=True,
-            )
+            print(f"  attempt {attempt + 1}/{attempts} -> {endpoint_name}", flush=True)
             post = urllib.parse.urlencode({"data": spec.query}).encode() if spec.query else None
-            request = urllib.request.Request(
-                endpoint,
-                data=post,
-                headers={"User-Agent": "OmahaUrbanSimulation/3 (local research visualization)"},
-            )
-            with urllib.request.urlopen(
-                request, timeout=cfg.get("download_timeout", 240)
-            ) as response:
-                source_url = response.geturl()
-                with tempfile.NamedTemporaryFile(
-                    prefix=spec.path.name + ".", suffix=".part", dir=spec.path.parent, delete=False
-                ) as handle:
-                    temp_path = Path(handle.name)
-                    while True:
-                        block = response.read(1024 * 1024)
-                        if not block:
-                            break
-                        handle.write(block)
+            with tempfile.NamedTemporaryFile(
+                prefix=spec.path.name + ".", suffix=".part", dir=spec.path.parent, delete=False
+            ) as handle:
+                temp_path = Path(handle.name)
+            source_url = _download_attempt_with_deadline(endpoint, post, temp_path, cfg)
             details = (
                 validate_osm(temp_path)
                 if spec.kind == "osm"
@@ -402,6 +508,12 @@ def _download_cached(spec, cfg):
             _VALIDATED_INPUTS[(_file_identity(spec.path), spec.kind, VALIDATOR_VERSION)] = dict(
                 record
             )
+            elapsed = time.monotonic() - started
+            size_mb = record["size"] / (1024 * 1024)
+            print(
+                f"  {endpoint_name} -> SUCCESS — {size_mb:.1f} MB — {elapsed:.1f} s",
+                flush=True,
+            )
             return record
         except (
             OSError,
@@ -412,11 +524,13 @@ def _download_cached(spec, cfg):
             http.client.HTTPException,
         ) as exc:
             last_error = exc
-            print(f"  {spec.label}: {type(exc).__name__}: {exc}", flush=True)
+            elapsed = time.monotonic() - started
+            print(f"  {endpoint_name} -> {_attempt_error_text(exc)} — {elapsed:.1f} s", flush=True)
+            http_code = getattr(exc, "http_code", None) or getattr(exc, "code", None)
             if isinstance(exc, urllib.error.HTTPError):
                 exc.close()
-                if exc.code not in {408, 429, 500, 502, 503, 504}:
-                    break
+            if http_code is not None and http_code not in {408, 429, 500, 502, 503, 504}:
+                break
             if attempt + 1 < attempts:
                 delay = _retry_delay(exc, attempt, cfg)
                 print(f"  retrying in {delay:g} seconds (prefetch only)", flush=True)

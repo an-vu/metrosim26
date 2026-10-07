@@ -39,6 +39,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--timeout", type=float, help="Timeout in seconds per network operation (default: 240)."
     )
+    parser.add_argument(
+        "--attempt-timeout",
+        type=float,
+        help="Hard wall-clock limit for one complete attempt (default: 300 seconds).",
+    )
     args = parser.parse_args(argv)
     cfg = make_config(preview=args.preview)
     if args.cache_dir is not None:
@@ -50,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg["download_attempts"] = args.attempts
     if args.timeout is not None:
         cfg["download_timeout"] = args.timeout
+    if args.attempt_timeout is not None:
+        cfg["download_attempt_timeout"] = args.attempt_timeout
     validate_config(cfg)
     print(
         f"Cache: {cfg['cache_dir']}\nAcquisition: sequential; "
