@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from omaha_config import timeline_start
 from omaha_runtime import report_progress, write_json
 from omaha_workers import mesh_triangles
 
@@ -15,11 +16,22 @@ from omaha_workers import mesh_triangles
 class PacketBatch:
     """Preserve face geometry while bounding each Blender mesh import."""
 
-    def __init__(self, directory, packets, collection, name, material, max_vertices, lifetime=None):
+    def __init__(
+        self,
+        directory,
+        packets,
+        collection,
+        name,
+        material,
+        max_vertices,
+        lifetime=None,
+        properties=None,
+    ):
         self.directory, self.packets = directory, packets
         self.collection, self.name, self.material = collection, name, material
         self.limit = max(1000, max_vertices)
         self.lifetime = lifetime
+        self.properties = properties or {}
         self.vertices, self.faces = [], []
         self.chunk = 0
 
@@ -55,6 +67,7 @@ class PacketBatch:
                 collection=self.collection,
                 material=self.material,
                 lifetime=self.lifetime,
+                properties=self.properties,
             )
         )
         self.chunk += 1
@@ -178,6 +191,7 @@ def _visual_lifetime_records(versions):
                         "end_year": site.get("end_year"),
                         "buildings": [item] if category == "buildings" else [],
                         "surfaces": [item] if category == "surfaces" else [],
+                        **({"project_id": site["project_id"]} if "project_id" in site else {}),
                     }
     return sorted(
         records.values(),
@@ -194,7 +208,18 @@ def export_scene(cfg, grid, baseline, result, directory):
     directory.mkdir(parents=True, exist_ok=True)
     packets = []
     palette = {}
-    collections = {key: key for key in ("baseline", "land", "future", "stage")}
+    collections = {
+        key: key
+        for key in (
+            "baseline",
+            "land",
+            "future",
+            "stage",
+            "observed_roads",
+            "local_roads",
+            "infrastructure",
+        )
+    }
     last_pulse = time.monotonic()
     processed = 0
 
@@ -211,8 +236,40 @@ def export_scene(cfg, grid, baseline, result, directory):
         palette[name] = {"color": color, "roughness": roughness, "metallic": metallic}
         return name
 
-    def make_batch(collection, name, material, max_vertices, lifetime=None):
-        return PacketBatch(directory, packets, collection, name, material, max_vertices, lifetime)
+    def make_batch(collection, name, material, max_vertices, lifetime=None, properties=None):
+        return PacketBatch(
+            directory, packets, collection, name, material, max_vertices, lifetime, properties
+        )
+
+    first_year = timeline_start(cfg)
+    historical = result.get("history")
+    observed_batches = {}
+
+    def observed_batch(kind, feature, collection, name, material):
+        evidence = historical["lifetimes"][kind][feature["id"]] if historical else None
+        life = (evidence["start_year"], evidence["end_year"], first_year) if evidence else None
+        provenance = (
+            "historically_reconstructed"
+            if evidence and evidence["historical_coverage"] == "evidence_supported"
+            else "observed"
+        )
+        key = kind, life, provenance, material
+        if key not in observed_batches:
+            observed_batches[key] = make_batch(
+                collection,
+                name,
+                material,
+                chunk_size,
+                life,
+                dict(
+                    provenance=provenance,
+                    input_provenance="observed",
+                    historical_coverage=evidence["historical_coverage"]
+                    if evidence
+                    else "not_requested",
+                ),
+            )
+        return observed_batches[key]
 
     colors = {
         "existing": (0.56, 0.55, 0.52),
@@ -222,6 +279,7 @@ def export_scene(cfg, grid, baseline, result, directory):
         "water": (0.11, 0.27, 0.31),
         "park": (0.28, 0.40, 0.29),
         "ground": (0.43, 0.46, 0.40),
+        "infrastructure": (0.16, 0.31, 0.40),
     }
     materials = {
         key: material("Omaha_" + key, color, 0.28 if key == "water" else 0.8)
@@ -237,38 +295,37 @@ def export_scene(cfg, grid, baseline, result, directory):
         (0.77, 0.69, 0.60),
     )
     chunk_size = min(12000, int(cfg.get("mesh_chunk_vertices", 120000)))
-    observed = make_batch(
-        collections["baseline"], "OSM_Buildings", materials["existing"], chunk_size
-    )
     vertical_scale = float(cfg.get("vertical_exaggeration", 1.25))
     report_progress("preparing_scene", "Preparing OSM buildings")
     for building in sorted(baseline["buildings"], key=lambda record: record["id"]):
         pulse()
+        observed = observed_batch(
+            "building", building, collections["baseline"], "OSM_Buildings", materials["existing"]
+        )
         for polygon in building["polygons"]:
             observed.add(*_building_geometry(polygon, building["height_m"] * vertical_scale))
-    observed.flush()
-    roads = make_batch(collections["baseline"], "OSM_Roads", materials["road"], chunk_size)
     report_progress("preparing_scene", "Preparing OSM roads")
     for road in sorted(baseline["roads"], key=lambda record: record["id"]):
         pulse()
         if road.get("tunnel", False):
             continue  # The flat map cannot represent terrain above a tunnel.
+        roads = observed_batch(
+            "road", road, collections["observed_roads"], "OSM_Roads", materials["road"]
+        )
         elevation = 0.007 if road.get("bridge", False) else 0.00002
         roads.add(*_road_geometry(road["points"], road["width_km"], elevation))
-    roads.flush()
-    land_batches = {
-        kind: make_batch(collections["land"], "OSM_" + kind, materials[kind], chunk_size)
-        for kind in ("water", "park")
-    }
     report_progress("preparing_scene", "Preparing land features")
     for feature in sorted(baseline["land"], key=lambda record: record["id"]):
         pulse()
         kind = feature["kind"]
-        if kind in land_batches:
+        if kind in ("water", "park"):
+            land_batch = observed_batch(
+                "land", feature, collections["land"], "OSM_" + kind, materials[kind]
+            )
             elevation = 0.0 if kind == "water" else -0.000005
             for polygon in feature["polygons"]:
-                land_batches[kind].add(*_surface_geometry(polygon, elevation))
-    for batch in land_batches.values():
+                land_batch.add(*_surface_geometry(polygon, elevation))
+    for batch in observed_batches.values():
         batch.flush()
     ground = {
         "outer": [
@@ -288,6 +345,7 @@ def export_scene(cfg, grid, baseline, result, directory):
     base_year = int(cfg["base_year"])
     base_decade = (base_year // 10) * 10
     versions = _visual_lifetime_records(result["versions"])
+    project_names = {p["project_id"]: p["name"] for p in result.get("projects", [])}
     previous_lifetime = None
     report_progress("preparing_scene", "Preparing future development")
     for site in versions:
@@ -298,6 +356,12 @@ def export_scene(cfg, grid, baseline, result, directory):
         if end is not None and end <= start:
             raise ValueError(f"Invalid lifetime for site {site['id']}, version {site['version']}")
         lifetime = (start, end)
+        properties = dict(provenance="future_generated", fictional=True)
+        if site.get("project_id"):
+            properties.update(
+                project_id=site["project_id"],
+                fictional_project_name=project_names[site["project_id"]],
+            )
         if lifetime != previous_lifetime:
             for batch in batches.values():
                 batch.flush()
@@ -312,7 +376,7 @@ def export_scene(cfg, grid, baseline, result, directory):
                 materials[material_key] = material(
                     "Future_" + str(decade) + "s", decade_colors[index]
                 )
-            key = (start, end, material_key)
+            key = (start, end, material_key, site.get("project_id"))
             if key not in batches:
                 name = f"Scenario_{start}_{end or 'onward'}_{material_key}"
                 batches[key] = make_batch(
@@ -320,7 +384,8 @@ def export_scene(cfg, grid, baseline, result, directory):
                     name,
                     materials[material_key],
                     chunk_size,
-                    (start, end, base_year),
+                    (start, end, first_year),
+                    properties,
                 )
             for volume in building.get("volumes") or [building]:
                 polygon = {"outer": volume["poly"], "holes": volume.get("holes", [])}
@@ -333,20 +398,40 @@ def export_scene(cfg, grid, baseline, result, directory):
                 )
         for surface in site.get("surfaces", []):
             material_key = "future_road" if surface["kind"] == "road" else "parking"
-            key = (start, end, material_key)
+            key = (start, end, material_key, site.get("project_id"))
             if key not in batches:
                 name = f"Scenario_{start}_{end or 'onward'}_{material_key}"
                 batches[key] = make_batch(
-                    collections["future"],
+                    collections["local_roads"]
+                    if surface["kind"] == "road"
+                    else collections["future"],
                     name,
                     materials[material_key],
                     chunk_size,
-                    (start, end, base_year),
+                    (start, end, first_year),
+                    properties,
                 )
             polygon = {"outer": surface["poly"], "holes": surface.get("holes", [])}
             batches[key].add(*_surface_geometry(polygon, 0.00007))
     for batch in batches.values():
         batch.flush()
+    for record in result.get("infrastructure", []):
+        for i, segment in enumerate(record["segments"]):
+            batch = make_batch(
+                collections["infrastructure"],
+                record["name"] + f"_{i}",
+                materials["infrastructure"],
+                chunk_size,
+                (segment["opening_year"], None, first_year),
+                dict(
+                    provenance="future_generated",
+                    fictional=True,
+                    infrastructure_id=record["infrastructure_id"],
+                    fictional_project_name=record["name"],
+                ),
+            )
+            batch.add(*_surface_geometry({"outer": segment["poly"], "holes": []}, 0.00009))
+            batch.flush()
     manifest = {
         "schema_version": 1,
         "cfg": cfg,

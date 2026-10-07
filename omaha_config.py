@@ -21,6 +21,13 @@ VALIDATE_PARALLEL_RESULTS = False  # Debug: costs a second, serial simulation.
 BASE_YEAR = 2026
 END_YEAR = 2076
 PREVIEW_END_YEAR = 2035
+ENABLE_PROJECTS = False
+ENABLE_INFRASTRUCTURE = False
+HISTORICAL_MODE = "DISABLED"  # DISABLED | EVIDENCE (partial reconstruction, never reverse growth)
+TIMELINE_START_YEAR = None  # None uses BASE_YEAR; e.g. 2006 with HISTORICAL_MODE = "EVIDENCE"
+HISTORICAL_EVIDENCE_FILE = ""  # Optional local JSON; undocumented historical visibility is unknown.
+SAVE_CONTINUATION = False  # Export restart groundwork; EXTEND is not yet a supported run mode.
+EVOLUTION_SCHEMA_VERSION = 1
 CELL_KM = 0.35
 FULL_BOUNDS = (40.99031149984831, -96.43156075030879, 41.453886499728576, -95.61498024942590)
 PREVIEW_BOUNDS = (41.22, -96.06, 41.31, -95.89)
@@ -101,6 +108,32 @@ def make_config(preview=None):
         "validate_parallel_results": VALIDATE_PARALLEL_RESULTS,
         "base_year": BASE_YEAR,
         "end_year": PREVIEW_END_YEAR if preview_mode else END_YEAR,
+        "enable_projects": ENABLE_PROJECTS,
+        "enable_infrastructure": ENABLE_INFRASTRUCTURE,
+        "historical_mode": HISTORICAL_MODE,
+        "timeline_start_year": TIMELINE_START_YEAR,
+        "historical_evidence_file": str(
+            (
+                Path(__file__).resolve().parent / Path(HISTORICAL_EVIDENCE_FILE).expanduser()
+            ).resolve()
+        )
+        if HISTORICAL_EVIDENCE_FILE
+        else "",
+        "save_continuation": SAVE_CONTINUATION,
+        "project_min_buildings": 2,
+        "project_min_housing": 40.0,
+        "project_min_jobs": 150.0,
+        "project_construction_years": 3,
+        "project_max_starts_per_year": 3,
+        "project_feedback_cap": 0.15,
+        "infrastructure_pressure_years": 3,
+        "infrastructure_max_starts_per_year": 1,
+        "infrastructure_max_projects": 24,
+        "infrastructure_max_route_cells": 8,
+        "infrastructure_construction_years": 3,
+        "infrastructure_access_threshold": 0.40,
+        "infrastructure_access_gain": 0.20,
+        "infrastructure_width_km": 0.018,
         "bounds": list(PREVIEW_BOUNDS if preview_mode else FULL_BOUNDS),
         "cell_km": CELL_KM,
         "subcell_samples": SUBCELL_SAMPLES,
@@ -181,6 +214,37 @@ def make_config(preview=None):
 
 
 def validate_config(cfg):
+    if cfg.get("timeline_start_year") is not None and type(cfg["timeline_start_year"]) is not int:
+        raise ValueError("TIMELINE_START_YEAR must be an integer or None.")
+    if cfg.get("historical_mode", "DISABLED") not in {"DISABLED", "EVIDENCE"}:
+        raise ValueError("HISTORICAL_MODE must be DISABLED or EVIDENCE.")
+    start = timeline_start(cfg)
+    if start > cfg["base_year"]:
+        raise ValueError("TIMELINE_START_YEAR must not follow BASE_YEAR.")
+    if start < cfg["base_year"] and cfg.get("historical_mode", "DISABLED") == "DISABLED":
+        raise ValueError("A pre-baseline timeline requires HISTORICAL_MODE='EVIDENCE'.")
+    for name in (
+        "project_min_buildings",
+        "project_construction_years",
+        "project_max_starts_per_year",
+        "infrastructure_pressure_years",
+        "infrastructure_max_starts_per_year",
+        "infrastructure_max_projects",
+        "infrastructure_max_route_cells",
+        "infrastructure_construction_years",
+    ):
+        if name in cfg and (type(cfg[name]) is not int or cfg[name] < 1):
+            raise ValueError(f"{name} must be a positive integer.")
+    for name in ("project_min_housing", "project_min_jobs", "infrastructure_width_km"):
+        if name in cfg and (not math.isfinite(cfg[name]) or cfg[name] <= 0):
+            raise ValueError(f"{name} must be positive and finite.")
+    for name in (
+        "project_feedback_cap",
+        "infrastructure_access_threshold",
+        "infrastructure_access_gain",
+    ):
+        if name in cfg and not 0 <= cfg[name] <= 1:
+            raise ValueError(f"{name} must be in [0, 1].")
     if cfg.get("data_mode", "OFFLINE").upper() not in {"OFFLINE", "ONLINE"}:
         raise ValueError("DATA_MODE must be OFFLINE or ONLINE.")
     if len(cfg["osm_tiles"]) != 2 or any(type(n) is not int or n < 1 for n in cfg["osm_tiles"]):
@@ -232,6 +296,40 @@ def validate_config(cfg):
 
 
 def simulation_config(cfg):
+    cfg = dict(cfg)
+    # Disabled additions must preserve legacy scenario identity as well as outputs.
+    for enabled, prefix in (
+        ("enable_projects", "project_"),
+        ("enable_infrastructure", "infrastructure_"),
+    ):
+        if not cfg.get(enabled, False):
+            cfg = {
+                key: value
+                for key, value in cfg.items()
+                if key != enabled and not key.startswith(prefix)
+            }
+    if cfg.get("historical_mode", "DISABLED") == "DISABLED":
+        for key in (
+            "historical_mode",
+            "timeline_start_year",
+            "historical_evidence_file",
+            "historical_evidence_sha256",
+        ):
+            cfg.pop(key, None)
+    else:
+        cfg["timeline_start_year"] = timeline_start(cfg)
+        path = cfg.pop("historical_evidence_file", "")
+        if path:
+            cfg["historical_evidence_sha256"] = hashlib.sha256(
+                Path(path).expanduser().read_bytes()
+            ).hexdigest()
+    cfg.pop("save_continuation", None)  # Export option, not a model parameter.
+    if (
+        cfg.get("enable_projects")
+        or cfg.get("enable_infrastructure")
+        or cfg.get("historical_mode") == "EVIDENCE"
+    ):
+        cfg["evolution_schema_version"] = EVOLUTION_SCHEMA_VERSION
     visual_keys = {
         "data_mode",
         "overpass_url",
@@ -287,3 +385,12 @@ PERFORMANCE_KEYS = {
 
 
 ENGINE_SCHEMA_VERSION = 3
+
+
+def timeline_start(cfg):
+    value = cfg.get("timeline_start_year")
+    return int(cfg["base_year"] if value is None else value)
+
+
+def evolution_enabled(cfg):
+    return bool(cfg.get("enable_projects") or cfg.get("enable_infrastructure"))

@@ -195,6 +195,7 @@ def run_job(directory):
             "Preparing mesh chunks outside Blender",
             worker_processes=0,
             broker_pid=None,
+            year=None,
             result_directory=str(result_directory),
         )
         export_scene(cfg, grid, baseline, result, directory / "scene")

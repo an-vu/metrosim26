@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from omaha_config import timeline_start
 from omaha_runtime import CalculationJob, write_json
 from omaha_scene import (
     _building_geometry as _building_geometry,
@@ -62,7 +63,16 @@ class SceneImport:
         scene["model_note"] = (
             "Experimental demand scenario constrained by real OSM and LODES; not a forecast."
         )
-        scene["year_at_frame_1"] = int(cfg["base_year"])
+        scene["year_at_frame_1"] = timeline_start(cfg)
+        scene["historical_note"] = (
+            "Before BASE_YEAR: partial evidence reconstruction; hidden unknown features do not imply absence."
+        )
+        scene["future_note"] = (
+            "Named development and infrastructure projects are fictional scenario outputs."
+        )
+        scene["project_events_file"] = str(
+            Path(cfg["run_directory"]) / "simulation" / "events.json"
+        )
         scene["seed"] = int(cfg["seed"])
         scene["configuration_json"] = json.dumps(cfg, sort_keys=True)
         scene.unit_settings.system = "METRIC"
@@ -75,6 +85,9 @@ class SceneImport:
             ("land", "Water and Parks"),
             ("future", "Scenario Development"),
             ("stage", "Presentation"),
+            ("observed_roads", "Observed Roads"),
+            ("local_roads", "Scenario Local Roads"),
+            ("infrastructure", "Scenario Infrastructure (Fictional)"),
         ):
             collection = self.own(bpy.data.collections, bpy.data.collections.new(name))
             collection["omaha_generated_visualization"] = True
@@ -98,13 +111,15 @@ class SceneImport:
             mesh.materials.append(materials[packet["material"]])
             obj = self.own(bpy.data.objects, bpy.data.objects.new(packet["name"], mesh))
             obj["omaha_generated_visualization"] = True
+            for key, value in packet.get("properties", {}).items():
+                obj[key] = value
             collections[packet["collection"]].objects.link(obj)
             if packet["lifetime"] is not None:
                 _set_object_lifetime(obj, *packet["lifetime"])
             self.done += 1
             yield
         self.message = "Configuring timeline and render device"
-        base_year = int(cfg["base_year"])
+        base_year = timeline_start(cfg)
         scene.frame_start = 1
         scene.frame_end = int(cfg["end_year"]) - base_year + 1
         scene.render.fps = int(cfg.get("render_fps", 2))
@@ -256,7 +271,7 @@ class BlenderJob:
             self.publish(force=True)
             self.active = False
             print(
-                f"Ready: frame 1 = {cfg['base_year']}; frame {scene.frame_end} = {cfg['end_year']}."
+                f"Ready: frame 1 = {timeline_start(cfg)}; frame {scene.frame_end} = {cfg['end_year']}."
             )
             print(f"Yearly states and summary: {Path(cfg['run_directory']) / 'simulation'}")
             # Blender owns the finished scene; do not retain large ID lists here.

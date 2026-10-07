@@ -65,6 +65,15 @@ for diagnosis; remove unwanted jobs only when idle, keeping the job referenced b
 `latest_completed.json`. Previously completed Blender scenes are retained too, so
 remove those manually when no longer needed.
 
+### Optional city-history features
+
+Set `ENABLE_PROJECTS = True` for fictional named, phased developments and
+`ENABLE_INFRASTRUCTURE = True` for demand-driven collector/access corridors.
+Both default to off. Historical reconstruction uses `HISTORICAL_MODE = "EVIDENCE"`,
+an earlier `TIMELINE_START_YEAR`, and optional local evidence; missing history remains
+unknown. See [configuration, evidence format, outputs, and limits](docs/evolution.md).
+Continuation contracts are available, but `EXTEND` execution is not implemented yet.
+
 ## FAQ
 
 ### What data and logic does the Omaha simulation use to decide where and what to generate?

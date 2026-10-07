@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from omaha_config import (
     COMMERCIAL,
     EMPTY,
     ENGINE_SCHEMA_VERSION,
+    EVOLUTION_SCHEMA_VERSION,
     HIGHRISE,
     INDUSTRIAL,
     MIXED,
@@ -30,6 +32,7 @@ from omaha_config import (
     STATE_SCHEMA_VERSION,
     SUBURBAN,
     URBAN_RES,
+    evolution_enabled,
     run_directory,
     simulation_config,
     validate_config,
@@ -41,6 +44,15 @@ from omaha_data import (
     load_baseline,
     save_baseline,
 )
+from omaha_history import (
+    build_history,
+    extra_output_names,
+    load_evidence,
+    load_history,
+    save_continuation,
+)
+from omaha_infrastructure import Infrastructure
+from omaha_projects import Projects
 from omaha_runtime import report_progress
 from omaha_workers import (
     Grid,
@@ -663,6 +675,11 @@ def run_simulation(cfg, grid, baseline, sim_dir):
             validate_parallel_results=False,
         )
         with tempfile.TemporaryDirectory(prefix="omaha_validation_") as tmp:
+            saved_baseline = Path(sim_dir) / "baseline.npz"
+            if (
+                evolution_enabled(cfg) or cfg.get("save_continuation")
+            ) and saved_baseline.is_file():
+                shutil.copyfile(saved_baseline, Path(tmp) / "baseline.npz")
             run_simulation(serial_cfg, grid, baseline, tmp)
             for path in sorted(Path(tmp).iterdir()):
                 if path.read_bytes() != (Path(sim_dir) / path.name).read_bytes():
@@ -708,7 +725,26 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
         baseline["park_fraction"] < cfg.get("substantial_park_fraction", 0.75)
     )
     access_ok = baseline["road_access"] >= cfg.get("minimum_road_access", 0.10)
+    source_baseline = baseline
+    events = load_evidence(cfg, baseline)[1] if cfg.get("historical_mode") == "EVIDENCE" else []
+    projects = Projects(cfg, grid, events)
+    infrastructure = (
+        Infrastructure(cfg, grid, baseline, events) if cfg.get("enable_infrastructure") else None
+    )
+    continuation_hashes = {}
     for year in range(cfg["base_year"], cfg["end_year"] + 1):
+        if evolution_enabled(cfg):
+            baseline = (
+                projects.feedback(source_baseline)
+                if cfg.get("enable_projects")
+                else dict(source_baseline)
+            )
+            if infrastructure is not None:
+                infrastructure.begin_year(year)
+                baseline["road_access"] = infrastructure.accessibility(year)
+            access_ok = baseline["road_access"] >= cfg.get("minimum_road_access", 0.10)
+            if infrastructure is not None:
+                access_ok &= ~infrastructure.reserved()
         report_progress("simulation", f"Simulating {year} / {cfg['end_year']}", year=year)
         plan_cache.year_start()
         grid_started = time.perf_counter()
@@ -752,7 +788,7 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
             def needs_capacity():
                 return unmet_housing > 1e-8 or unmet_jobs > 1e-8
 
-            def install(site, previous, phase):
+            def install(site, previous, phase, scheduled=False):
                 nonlocal \
                     free_housing, \
                     free_jobs, \
@@ -760,6 +796,10 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
                     unmet_jobs, \
                     served_housing, \
                     served_jobs
+                if not scheduled:
+                    site = projects.stage(
+                        site, previous, phase, year, baseline, unmet_housing, unmet_jobs
+                    )
                 old_h, old_j = site_capacity(previous) if previous is not None else (0.0, 0.0)
                 new_h, new_j = site_capacity(site)
                 delta_h, delta_j = new_h - old_h, new_j - old_j
@@ -797,6 +837,17 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
                 touched.add(site["gy"] * grid.nx + site["gx"])
                 urban[site["gy"], site["gx"]] = True
                 arch[site["gy"], site["gx"]] = site["arch"]
+
+            # Previously committed construction opens before new opportunities.
+            # It credits only delivered capacity; any excess remains vacant.
+            for site, previous in projects.due(year, active):
+                install(site, previous, "infill", scheduled=True)
+            if cfg.get("enable_projects"):
+                for sid in projects.pending:
+                    reserved = active[sid]
+                    access_ok[reserved["gy"], reserved["gx"]] = False
+                for flat in touched:
+                    access_ok.flat[flat] = False
 
             # Infill first: existing generated vacant parcels, then protected OSM neighborhoods.
             score = (
@@ -945,6 +996,11 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
                 )
                 if site is not None:
                     install(site, None, "greenfield")
+        projects.refresh(active)
+        if infrastructure is not None:
+            infrastructure.propose(
+                year, urban, neighbor_fraction(urban), unmet_housing, unmet_jobs, active, projects
+            )
         cumulative_housing_served += served_housing
         cumulative_jobs_served += served_jobs
         cumulative_housing_added += actions["housing_net"]
@@ -979,6 +1035,24 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
             "sites": [active[key] for key in sorted(active)],
             "metrics": metrics,
         }
+        if evolution_enabled(cfg) or cfg.get("historical_mode") == "EVIDENCE":
+            state["provenance"] = (
+                "model_derived" if year == cfg["base_year"] else "future_generated"
+            )
+        if evolution_enabled(cfg):
+            state["projects"] = projects.snapshot()["projects"]
+            state["infrastructure"] = (
+                [
+                    dict(
+                        infrastructure_id=r["infrastructure_id"],
+                        status=r["status"],
+                        phase=r["phase"],
+                    )
+                    for r in infrastructure.records
+                ]
+                if infrastructure
+                else []
+            )
         checkpoint_started = time.perf_counter()
         save_year_state(sim_dir, state)
         states.append(state)
@@ -996,6 +1070,55 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
             compact=True,
         )
         save_summary_csv(sim_dir / "summary.csv", summary)
+        if evolution_enabled(cfg):
+            atomic_json(
+                sim_dir / "projects.json",
+                dict(
+                    schema_version=EVOLUTION_SCHEMA_VERSION,
+                    completed_year=year,
+                    **projects.snapshot(),
+                ),
+                compact=True,
+            )
+            atomic_json(
+                sim_dir / "events.json",
+                dict(schema_version=EVOLUTION_SCHEMA_VERSION, completed_year=year, events=events),
+                compact=True,
+            )
+            if infrastructure is not None:
+                atomic_json(
+                    sim_dir / "infrastructure.json",
+                    dict(
+                        schema_version=EVOLUTION_SCHEMA_VERSION,
+                        completed_year=year,
+                        **infrastructure.snapshot(),
+                    ),
+                    compact=True,
+                )
+        if evolution_enabled(cfg) or cfg.get("save_continuation"):
+            save_continuation(
+                sim_dir,
+                cfg,
+                state,
+                initial,
+                projects,
+                infrastructure,
+                dict(
+                    households=households,
+                    jobs=jobs,
+                    free_housing=free_housing,
+                    free_jobs=free_jobs,
+                    unmet_housing=unmet_housing,
+                    unmet_jobs=unmet_jobs,
+                    cumulative_housing_demand=cumulative_housing_demand,
+                    cumulative_job_demand=cumulative_job_demand,
+                    cumulative_housing_served=cumulative_housing_served,
+                    cumulative_jobs_served=cumulative_jobs_served,
+                    cumulative_housing_added=cumulative_housing_added,
+                    cumulative_jobs_added=cumulative_jobs_added,
+                ),
+                continuation_hashes,
+            )
         plan_cache.seconds["checkpoint"] += time.perf_counter() - checkpoint_started
         plan_cache.year_end(year)
         print(
@@ -1007,6 +1130,17 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
         "versions": versions,
         "summary": summary,
         "baseline_capacity": initial,
+        **(
+            {
+                "projects": projects.snapshot()["projects"],
+                "events": events,
+                "infrastructure": infrastructure.snapshot()["infrastructure"]
+                if infrastructure
+                else [],
+            }
+            if evolution_enabled(cfg)
+            else {}
+        ),
         "metadata": {
             "scenario_capacity_baseline": initial,
             "developed_area_metric": baseline["metadata"]["developed_area_metric"],
@@ -1016,6 +1150,9 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
 
 def save_year_state(sim_dir, state):
     payload = {key: state[key] for key in ("year", "demolished", "metrics")}
+    for key in ("provenance", "projects", "infrastructure"):
+        if key in state:
+            payload[key] = state[key]
     payload["active_version_ids"] = [
         site["id"] + "@" + str(site["version"]) for site in state["sites"]
     ]
@@ -1066,7 +1203,7 @@ def load_simulation(sim_dir, cfg, grid):
                 if state[key].shape != grid.shape:
                     raise ValueError(f"Saved {year} grid shape differs from requested study grid.")
             states.append(state)
-    return {
+    result = {
         "states": states,
         "versions": manifest["versions"],
         "summary": [state["metrics"] for state in states],
@@ -1076,6 +1213,25 @@ def load_simulation(sim_dir, cfg, grid):
             "developed_area_metric": "Approximate developed-cell envelope in km2, reduced by water/park fractions; not observed impervious area.",
         },
     }
+    if evolution_enabled(cfg):
+        for name in ("projects", "events", "infrastructure"):
+            if name == "infrastructure" and not cfg.get("enable_infrastructure"):
+                result[name] = []
+                continue
+            record = json.loads((sim_dir / f"{name}.json").read_text(encoding="utf8"))
+            if (
+                record.get("schema_version") != EVOLUTION_SCHEMA_VERSION
+                or record.get("completed_year") != cfg["end_year"]
+            ):
+                raise ValueError(f"Incompatible/incomplete {name} history.")
+            result[name] = record[name]
+    if cfg.get("historical_mode") == "EVIDENCE":
+        history, historical_states = load_history(sim_dir)
+        result["history"] = history
+        result["states"] = historical_states + states
+        if not evolution_enabled(cfg):
+            result["events"] = history["events"]
+    return result
 
 
 def file_sha256(path):
@@ -1098,6 +1254,7 @@ def validate_saved_run(sim_dir, cfg):
     if simulation_config(metadata.get("simulation_config", {})) != simulation_config(cfg):
         raise ValueError("Saved simulation configuration differs; use RUN_MODE='SIMULATE'.")
     expected = {"baseline.npz", "versions.json", "summary.csv"}
+    expected.update(extra_output_names(cfg))
     expected.update(f"{year}.npz" for year in range(cfg["base_year"], cfg["end_year"] + 1))
     manifest = metadata.get("files", {})
     if not expected.issubset(manifest):
@@ -1211,6 +1368,17 @@ def prepare_simulation(cfg, *, destination=None):
                 f"Data preparation + baseline save: {time.perf_counter() - preparation_started:.3f} s"
             )
         result = run_simulation(cfg, grid, baseline, sim_dir)
+        if cfg.get("historical_mode") == "EVIDENCE":
+            report_progress("historical_reconstruction", "Preparing evidence-led historical states")
+            history, historical_states = build_history(cfg, grid, baseline, sim_dir)
+            result["history"] = history
+            result["states"] = historical_states + result["states"]
+            if not evolution_enabled(cfg):
+                result["events"] = history["events"]
+                atomic_json(
+                    sim_dir / "events.json",
+                    dict(schema_version=EVOLUTION_SCHEMA_VERSION, events=history["events"]),
+                )
         metadata["data"] = baseline.get("metadata", {})
         metadata["simulation"] = result.get("metadata", {})
         metadata["calculation_seconds"] = round(time.perf_counter() - started, 3)
@@ -1218,7 +1386,10 @@ def prepare_simulation(cfg, *, destination=None):
         paths.extend(
             sim_dir / f"{year}.npz" for year in range(cfg["base_year"], cfg["end_year"] + 1)
         )
-        metadata["files"] = {path.name: file_sha256(path) for path in paths}
+        paths.extend(sim_dir / name for name in extra_output_names(cfg))
+        metadata["files"] = {
+            str(path.relative_to(sim_dir)).replace(os.sep, "/"): file_sha256(path) for path in paths
+        }
         metadata["complete"] = True
         atomic_json(sim_dir / "metadata.json", metadata)
     result["run_directory"] = str(directory)
