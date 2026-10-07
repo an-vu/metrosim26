@@ -6,7 +6,6 @@ Blender first; this entry point always uses local data only.
 """
 
 import sys
-import time
 from pathlib import Path
 
 
@@ -29,6 +28,8 @@ def project_directory() -> Path:
         "omaha_simulation.py",
         "omaha_workers.py",
         "omaha_blender.py",
+        "omaha_runtime.py",
+        "omaha_scene.py",
     )
     for directory in candidates:
         if all((directory / name).is_file() for name in required):
@@ -55,21 +56,11 @@ def main() -> None:
     import omaha_config
 
     importlib.reload(omaha_config)
-    from omaha_blender import build_blender_scene, finalize_blender_output
-    from omaha_simulation import prepare_simulation
+    from omaha_blender import start_blender_job
 
     cfg = omaha_config.make_config()
     cfg["data_mode"] = "OFFLINE"
-    grid, baseline, result = prepare_simulation(cfg)
-    cfg["run_directory"] = result["run_directory"]
-    started = time.perf_counter()
-    scene = build_blender_scene(cfg, grid, baseline, result)
-    if cfg.get("profile_performance", True):
-        print(f"Blender scene construction: {time.perf_counter() - started:.3f} s")
-    finalize_blender_output(cfg, scene)
-    print(f"Ready: frame 1 = {cfg['base_year']}; frame {scene.frame_end} = {cfg['end_year']}.")
-    print(f"For 2050 use frame {2050 - cfg['base_year'] + 1} in a full run.")
-    print(f"Yearly states and summary: {Path(result['run_directory']) / 'simulation'}")
+    start_blender_job(cfg)
 
 
 if __name__ == "__main__":

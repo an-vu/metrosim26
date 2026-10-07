@@ -41,6 +41,7 @@ from omaha_data import (
     load_baseline,
     save_baseline,
 )
+from omaha_runtime import report_progress
 from omaha_workers import (
     Grid,
     make_site_plan,
@@ -513,9 +514,11 @@ class _PlanningCache(dict):
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             start_new_session=os.name != "nt",
         )
+        report_progress("simulation", "Starting planning broker", broker_pid=self.process.pid)
         reply = self._receive()
         if not reply.get("ready") or reply.get("numpy") != np.__version__:
             raise RuntimeError("Worker NumPy version must match Blender NumPy " + np.__version__)
+        report_progress("simulation", "Planning workers ready", worker_processes=reply["workers"])
         if self.profile:
             print(
                 f"Worker pool ready: {reply['workers']} spawned processes; read-only mapped geometry."
@@ -534,6 +537,9 @@ class _PlanningCache(dict):
                     if stream:
                         stream.close()
                 self.process = None
+                report_progress(
+                    "simulation", "Planning worker pool closed", worker_processes=0, broker_pid=None
+                )
         if self.error_file is not None:
             self.error_file.close()
             self.error_file = None
@@ -644,6 +650,9 @@ class _PlanningCache(dict):
 def run_simulation(cfg, grid, baseline, sim_dir):
     with _PlanningCache(cfg, grid, baseline) as cache:
         result = _run_simulation(cfg, grid, baseline, sim_dir, cache)
+    report_progress(
+        "simulation", "Simulation complete; finalizing results", worker_processes=0, broker_pid=None
+    )
     if cfg.get("validate_parallel_results", False) and cache.counts["parallel_plans"]:
         # Debug-only: replay the calculation serially in temporary storage, then
         # compare exact array archives and authoritative JSON/CSV files.
@@ -700,6 +709,7 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
     )
     access_ok = baseline["road_access"] >= cfg.get("minimum_road_access", 0.10)
     for year in range(cfg["base_year"], cfg["end_year"] + 1):
+        report_progress("simulation", f"Simulating {year} / {cfg['end_year']}", year=year)
         plan_cache.year_start()
         grid_started = time.perf_counter()
         new_development = np.zeros(grid.shape, dtype=bool)
@@ -1105,6 +1115,16 @@ def _saved_run_directory(cfg, directory):
     Never guess between multiple matching historical runs; their source bytes
     could differ. New runs always use the canonical transport-independent path.
     """
+    pointer = directory / "latest_completed.json"
+    if pointer.is_file():
+        candidate = (
+            directory / json.loads(pointer.read_text(encoding="utf8"))["directory"]
+        ).resolve()
+        if not candidate.is_relative_to(directory.resolve()):
+            raise ValueError("Completed-run pointer is outside its scenario directory.")
+        if validate_saved_run(candidate / "simulation", cfg) is not None:
+            return candidate
+        raise ValueError("Completed-run pointer refers to an incomplete run.")
     if (directory / "simulation" / "metadata.json").is_file():
         return directory
     label = "preview" if cfg["preview_mode"] else "full"
@@ -1131,7 +1151,7 @@ def _saved_run_directory(cfg, directory):
     return matches[0] if matches else directory
 
 
-def prepare_simulation(cfg):
+def prepare_simulation(cfg, *, destination=None):
     """Pure calculation orchestration; also usable from a standalone NumPy process."""
     validate_config(cfg)
     preparation_started = time.perf_counter()
@@ -1139,6 +1159,7 @@ def prepare_simulation(cfg):
     directory = run_directory(cfg)
     mode = cfg["run_mode"].upper()
     if mode != "SIMULATE":
+        report_progress("loading_saved", "Validating and locating saved results")
         directory = _saved_run_directory(cfg, directory)
     sim_dir = directory / "simulation"
     print(f"Omaha scenario | seed {cfg['seed']} | {cfg['base_year']}–{cfg['end_year']}")
@@ -1147,6 +1168,7 @@ def prepare_simulation(cfg):
 
     metadata = None if mode == "SIMULATE" else validate_saved_run(sim_dir, cfg)
     if metadata is not None:
+        report_progress("loading_saved", "Validating and loading saved results")
         print("Loading saved baseline and yearly states; no downloads or simulation.")
         baseline = load_baseline(sim_dir / "baseline.npz", grid)
         result = load_simulation(sim_dir, cfg, grid)
@@ -1155,6 +1177,9 @@ def prepare_simulation(cfg):
             raise FileNotFoundError(
                 f"No complete matching simulation at {sim_dir}; run AUTO first."
             )
+        if destination is not None:
+            directory = Path(destination)
+            sim_dir = directory / "simulation"
         sim_dir.mkdir(parents=True, exist_ok=True)
         metadata = {
             "complete": False,
@@ -1179,6 +1204,7 @@ def prepare_simulation(cfg):
         baseline = build_baseline(cfg, grid)
         # An offline preflight failure must not invalidate an existing completed run.
         atomic_json(sim_dir / "metadata.json", metadata)
+        report_progress("saving_baseline", "Saving baseline")
         save_baseline(sim_dir / "baseline.npz", baseline)
         if cfg.get("profile_performance", True):
             print(

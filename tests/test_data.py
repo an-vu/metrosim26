@@ -387,6 +387,8 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                 "omaha_simulation.py",
                 "omaha_workers.py",
                 "omaha_blender.py",
+                "omaha_runtime.py",
+                "omaha_scene.py",
             ):
                 (folder / name).touch()
             text = SimpleNamespace(filepath="//blender.py")

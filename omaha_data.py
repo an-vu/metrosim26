@@ -34,6 +34,7 @@ from omaha_config import (
     SUBURBAN,
     URBAN_RES,
 )
+from omaha_runtime import report_progress
 from omaha_workers import (
     _bbox,
     _boxes_overlap,
@@ -300,6 +301,7 @@ def inspect_cache(cfg, force=False):
 def require_input_cache(cfg):
     """Fail fast on missing files; otherwise report all validation failures. No HTTP."""
     print("Checking local Omaha input cache (no network)...", flush=True)
+    report_progress("validating_cache", "Validating input cache")
     specs = expected_inputs(cfg)
     problems = [(spec, "missing") for spec in specs if not spec.path.is_file()]
     if not problems:
@@ -674,6 +676,7 @@ def load_osm(cfg, grid):
     print(f"OSM: loading {len(tasks)} deterministically ordered local tiles.")
     merged, provenance, conflicts = {}, [], 0
     for tile_id, path, query in sorted(tasks):
+        report_progress("loading_osm", f"Loading OSM tile {tile_id + 1} / {len(tasks)}")
         with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
         if payload.get("remark") or "elements" not in payload:
@@ -1154,6 +1157,9 @@ def load_lodes(cfg, grid):
         "institution_jobs": ("CNS15", "CNS16", "CNS20"),
     }
     for state in sorted(cfg.get("lodes_states", ["ne", "ia"])):
+        report_progress(
+            "loading_lodes", f"Streaming {'Iowa' if state == 'ia' else 'Nebraska'} LODES"
+        )
 
         def fetch(kind):
             spec = lodes_input(cfg, state, kind)
@@ -1492,9 +1498,11 @@ def build_baseline(cfg, grid):
     if cfg.get("data_mode", "OFFLINE").upper() != "ONLINE":
         require_input_cache(cfg)
     elements, osm_metadata = load_osm(cfg, grid)
+    report_progress("parsing_osm", "Parsing OSM geometry and relations")
     b = parse_osm(elements, grid)
     del elements
     lodes, lodes_metadata = load_lodes(cfg, grid)
+    report_progress("deriving_baseline", "Deriving baseline signals and raster masks")
     b = derive_baseline(cfg, grid, b, lodes)
     b["metadata"] = {
         "osm": osm_metadata,
@@ -1510,6 +1518,7 @@ def build_baseline(cfg, grid):
             "Classification and road accessibility are derived model inputs.",
         ],
     }
+    report_progress("building_spatial_index", "Building baseline spatial index")
     prepare_spatial_index(b, grid)
     print(
         f"Baseline: {len(b['buildings']):,} OSM buildings, {len(b['roads']):,} roads, "

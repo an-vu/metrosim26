@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import math
+import time
+import traceback
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
-from omaha_workers import (
-    mesh_triangles,
+import numpy as np
+
+from omaha_runtime import CalculationJob, write_json
+from omaha_scene import (
+    _building_geometry as _building_geometry,
+)
+from omaha_scene import (
+    _visual_lifetime_records as _visual_lifetime_records,
 )
 
 try:
@@ -18,92 +29,347 @@ except ModuleNotFoundError:
     Vector = None
 
 
-def _oriented_ring(ring, counterclockwise=True):
-    points = [(float(p[0]), float(p[1])) for p in ring]
-    if len(points) > 1 and points[0] == points[-1]:
-        points.pop()
-    signed = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(points, points[1:] + points[:1]))
-    if (signed > 0.0) != counterclockwise:
-        points.reverse()
-    return points
+class SceneImport:
+    """One bounded mesh per step; all methods must run on Blender's main thread."""
 
+    def __init__(self, directory):
+        self.directory = Path(directory)
+        self.scene: Any = None
+        self.owned = []
+        self.finished = False
+        self.done = 0
+        self.total = 0
+        self.message = "Reading mesh manifest"
+        self.steps = self._steps()
+        self.cfg = {}
 
-def _surface_geometry(polygon, elevation_km=0.0):
-    """Pure geometry helper; triangulation preserves multipolygon courtyard holes."""
-    vertices, faces = [], []
-    for triangle in mesh_triangles(polygon):
-        triangle = _oriented_ring(triangle)
-        if len(triangle) != 3:
-            continue
-        start = len(vertices)
-        vertices.extend((x, y, elevation_km) for x, y in triangle)
-        faces.append((start, start + 1, start + 2))
-    return vertices, faces
+    def own(self, database, item):
+        self.owned.append((database, item))
+        return item
 
-
-def _building_geometry(polygon, height_m, z0_m=0.0):
-    """Extrude actual footprints, including courtyard walls and a holed roof."""
-    # Centimeter-scale offsets separate flat presentation surfaces without
-    # visibly lifting buildings off the ground.
-    floor = 0.00008 + float(z0_m) / 1000.0
-    roof = floor + max(0.1, float(height_m)) / 1000.0
-    vertices, faces = _surface_geometry(polygon, roof)
-    lower_vertices, lower_faces = _surface_geometry(polygon, floor)
-    offset = len(vertices)
-    vertices.extend(lower_vertices)
-    faces.extend(tuple(offset + i for i in reversed(face)) for face in lower_faces)
-    rings = [(polygon["outer"], True)]
-    rings.extend((hole, False) for hole in polygon.get("holes", []))
-    for ring, counterclockwise in rings:
-        ring = _oriented_ring(ring, counterclockwise)
-        for a, b in zip(ring, ring[1:] + ring[:1]):
-            if a == b:
-                continue
-            offset = len(vertices)
-            vertices.extend(
-                ((a[0], a[1], floor), (b[0], b[1], floor), (b[0], b[1], roof), (a[0], a[1], roof))
-            )
-            faces.append((offset, offset + 1, offset + 2, offset + 3))
-    return vertices, faces
-
-
-def _road_geometry(points, width_km, elevation_km=0.00002):
-    """Flat road strips with bounded miter joins; no cylindrical road tubes."""
-    clean = []
-    for point in points:
-        xy = (float(point[0]), float(point[1]))
-        if not clean or math.dist(clean[-1], xy) > 1e-9:
-            clean.append(xy)
-    if len(clean) < 2:
-        return [], []
-    normals = []
-    for a, b in zip(clean, clean[1:]):
-        length = math.dist(a, b)
-        normals.append((-(b[1] - a[1]) / length, (b[0] - a[0]) / length))
-    half = max(float(width_km), 0.001) * 0.5
-    vertices, faces = [], []
-    for i, (x, y) in enumerate(clean):
-        before = normals[max(0, i - 1)]
-        after = normals[min(i, len(normals) - 1)]
-        mx, my = before[0] + after[0], before[1] + after[1]
-        length = math.hypot(mx, my)
-        if length < 1e-8:
-            mx, my = after
-            extent = half
-        else:
-            mx, my = mx / length, my / length
-            dot = max(0.25, mx * after[0] + my * after[1])
-            extent = min(half / dot, half * 2.0)
-        vertices.extend(
-            (
-                (x + mx * extent, y + my * extent, elevation_km),
-                (x - mx * extent, y - my * extent, elevation_km),
-            )
+    def _steps(self):
+        assert bpy is not None
+        manifest = json.loads((self.directory / "manifest.json").read_text(encoding="utf8"))
+        if manifest["schema_version"] != 1:
+            raise ValueError("Unsupported mesh manifest schema")
+        cfg = dict(manifest["cfg"], run_directory=manifest["result_directory"])
+        self.cfg = cfg
+        grid = SimpleNamespace(**manifest["grid"])
+        self.total = len(manifest["packets"])
+        scene = self.own(bpy.data.scenes, bpy.data.scenes.new("OMAHA_SIMULATION"))
+        self.scene = scene
+        scene["omaha_simulation"] = True
+        scene["model_note"] = (
+            "Experimental demand scenario constrained by real OSM and LODES; not a forecast."
         )
-        if i:
-            start = 2 * i
-            faces.append((start - 2, start - 1, start + 1, start))
-    return vertices, faces
+        scene["year_at_frame_1"] = int(cfg["base_year"])
+        scene["seed"] = int(cfg["seed"])
+        scene["configuration_json"] = json.dumps(cfg, sort_keys=True)
+        scene.unit_settings.system = "METRIC"
+        scene.unit_settings.scale_length = 1000.0
+        scene.unit_settings.length_unit = "KILOMETERS"
+        yield
+        collections = {}
+        for key, name in (
+            ("baseline", "Observed Omaha"),
+            ("land", "Water and Parks"),
+            ("future", "Scenario Development"),
+            ("stage", "Presentation"),
+        ):
+            collection = self.own(bpy.data.collections, bpy.data.collections.new(name))
+            collection["omaha_generated_visualization"] = True
+            scene.collection.children.link(collection)
+            collections[key] = collection
+            yield
+        materials = {}
+        for name, values in manifest["materials"].items():
+            materials[name] = self.own(bpy.data.materials, _new_material(name, **values))
+            yield
+        for packet in manifest["packets"]:
+            self.message = f"Building {packet['collection']}: mesh {self.done + 1}/{self.total}"
+            with np.load(self.directory / packet["file"], allow_pickle=False) as arrays:
+                vertices = arrays["vertices"].tolist()
+                indices, offsets = arrays["indices"], arrays["offsets"]
+                faces = [indices[a:b].tolist() for a, b in zip(offsets[:-1], offsets[1:])]
+            mesh = self.own(bpy.data.meshes, bpy.data.meshes.new(packet["name"]))
+            mesh["omaha_generated_visualization"] = True
+            mesh.from_pydata(vertices, [], faces)
+            mesh.update()
+            mesh.materials.append(materials[packet["material"]])
+            obj = self.own(bpy.data.objects, bpy.data.objects.new(packet["name"], mesh))
+            obj["omaha_generated_visualization"] = True
+            collections[packet["collection"]].objects.link(obj)
+            if packet["lifetime"] is not None:
+                _set_object_lifetime(obj, *packet["lifetime"])
+            self.done += 1
+            yield
+        self.message = "Configuring timeline and render device"
+        base_year = int(cfg["base_year"])
+        scene.frame_start = 1
+        scene.frame_end = int(cfg["end_year"]) - base_year + 1
+        scene.render.fps = int(cfg.get("render_fps", 2))
+        for year in range(base_year, int(cfg["end_year"]) + 1):
+            scene.timeline_markers.new(str(year), frame=year - base_year + 1)
+        resolution = cfg.get("render_resolution", [1600, 1000])
+        scene.render.resolution_x, scene.render.resolution_y = map(int, resolution)
+        scene.render.resolution_percentage = 100
+        scene.render.image_settings.file_format = "PNG"
+        scene.render.image_settings.color_mode = "RGB"
+        scene.render.film_transparent = False
+        _configure_cycles(cfg, scene)
+        yield
+        self.message = "Configuring camera and lighting"
+        # Register presentation IDs as they are created, including on failure.
+        _configure_camera_and_lighting(cfg, grid, scene, collections["stage"], own=self.own)
+        yield
+        scene.frame_set(1)
+        if bpy.context.window is not None:
+            bpy.context.window.scene = scene
+        if bpy.context.screen is not None:
+            for area in bpy.context.screen.areas:
+                if area.type == "VIEW_3D":
+                    space = area.spaces.active
+                    space.clip_start = 0.001
+                    space.clip_end = max(grid.width, grid.height) * 20.0
+                    space.shading.color_type = "MATERIAL"
+                    space.region_3d.view_perspective = "CAMERA"
+        self.finished = True
+
+    def cleanup_step(self):
+        """Remove one partial-build ID per tick; never touch prior scenes."""
+        self.steps.close()
+        if self.finished or not self.owned:
+            return True
+        database, item = self.owned.pop()
+        database.remove(item, do_unlink=True)
+        return not self.owned
+
+
+class BlenderJob:
+    def __init__(self, cfg, executable):
+        self.job = CalculationJob(cfg, executable)
+        self.status = dict(self.job.status)
+        self.started = time.monotonic()
+        self.scene_started = None
+        self.importer = None
+        self.active = True
+        self.cancel_requested = False
+        self.failure = None
+        self.last_phase = None
+        self.last_written = 0.0
+        self.timer_callback = self.tick
+
+    def cancel(self):
+        if self.active and not self.cancel_requested:
+            self.cancel_requested = True
+            self.job.cancel()
+            self.status.update(
+                phase="cancelling", message="Stopping calculation / removing partial scene"
+            )
+
+    def publish(self, force=False):
+        now = time.monotonic()
+        self.status["elapsed_seconds"] = now - self.started
+        if force or now - self.last_written >= 0.5:
+            self.status["heartbeat_utc"] = time.time()
+            write_json(self.job.directory / "progress.json", self.status)
+            self.last_written = now
+
+    def tick(self):
+        assert bpy is not None
+        try:
+            delay = self._tick()
+        except Exception:
+            self.failure = traceback.format_exc()
+            print(self.failure)
+            self.cancel()
+            delay = 0.1
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == "VIEW_3D":
+                    area.tag_redraw()
+        return delay
+
+    def _tick(self):
+        if not self.active:
+            return None
+        if self.cancel_requested:
+            if not self.job.cancellation_finished():
+                return 0.1
+            if self.importer is not None and not self.importer.cleanup_step():
+                return 0.01
+            self.status.update(
+                phase="error" if self.failure else "cancelled",
+                complete=False,
+                error=self.failure,
+                worker_processes=0,
+                broker_pid=None,
+                message="Failed; see log"
+                if self.failure
+                else "Cancelled; saved checkpoints retained",
+            )
+            self.publish(force=True)
+            self.active = False
+            print("[Omaha] " + self.status["message"])
+            return None
+        if self.importer is None:
+            code = self.job.poll()
+            log = self.job.read_log()
+            if log:
+                print(log)
+            self.status = dict(self.job.status)
+            phase = self.status.get("phase")
+            if phase != self.last_phase:
+                print("[Omaha] " + self.status.get("message", str(phase)))
+                self.last_phase = phase
+            if code is None:
+                return 0.25
+            if code != 0 or phase != "scene_ready":
+                raise RuntimeError(
+                    self.status.get("error")
+                    or f"Calculation exited with code {code}; see {self.job.directory / 'calculation.log'}"
+                )
+            if self.job.log_offset < (self.job.directory / "calculation.log").stat().st_size:
+                return 0.01  # Drain the bounded log stream before starting scene import.
+            self.importer = SceneImport(self.job.directory / "scene")
+            self.scene_started = time.monotonic()
+            self.status.update(phase="building_scene", complete=False, worker_processes=0)
+            print("[Omaha] Blender scene construction: importing bounded mesh chunks")
+        try:
+            next(self.importer.steps)
+        except StopIteration:
+            cfg, scene = self.importer.cfg, self.importer.scene
+            assert self.scene_started is not None
+            print(f"Blender scene construction: {time.monotonic() - self.scene_started:.3f} s")
+            self.status.update(phase="finalizing", message="Finalizing optional output")
+            self.publish(force=True)
+            # Optional native save/render operations remain explicit, synchronous
+            # exports; the default interactive workflow does not enable them.
+            finalize_blender_output(cfg, scene)
+            self.status.update(
+                phase="complete",
+                message="Ready",
+                complete=True,
+                scene_progress=1.0,
+                year=cfg["end_year"],
+            )
+            self.publish(force=True)
+            self.active = False
+            print(
+                f"Ready: frame 1 = {cfg['base_year']}; frame {scene.frame_end} = {cfg['end_year']}."
+            )
+            print(f"Yearly states and summary: {Path(cfg['run_directory']) / 'simulation'}")
+            # Blender owns the finished scene; do not retain large ID lists here.
+            self.importer.owned.clear()
+            return None
+        self.status.update(
+            message=self.importer.message,
+            scene_progress=self.importer.done / max(1, self.importer.total),
+        )
+        self.publish()
+        return 0.01
+
+
+_ACTIVE_RUN = None
+_REGISTERED = False
+
+
+def _cancel_on_exit(*_args):
+    if _ACTIVE_RUN is not None and _ACTIVE_RUN.active:
+        _ACTIVE_RUN.cancel()
+
+
+def _cancel_on_load(*_args):
+    """Timers and scene IDs do not survive loading another .blend."""
+    assert bpy is not None
+    _cancel_on_exit()
+    if _ACTIVE_RUN is not None:
+        if bpy.app.timers.is_registered(_ACTIVE_RUN.timer_callback):
+            bpy.app.timers.unregister(_ACTIVE_RUN.timer_callback)
+        _ACTIVE_RUN.active = False
+        _ACTIVE_RUN.importer = None
+        _ACTIVE_RUN.status.update(
+            phase="cancelled", message="Cancelled on file load", complete=False
+        )
+
+
+if bpy is not None:
+
+    class OMAHA_OT_cancel(bpy.types.Operator):
+        bl_idname = "omaha.cancel_simulation"
+        bl_label = "Cancel Simulation"
+
+        def execute(self, context):
+            if _ACTIVE_RUN is not None:
+                _ACTIVE_RUN.cancel()
+            return {"FINISHED"}
+
+    class OMAHA_PT_status(bpy.types.Panel):
+        bl_label = "Omaha Simulation"
+        bl_idname = "OMAHA_PT_status"
+        bl_space_type = "VIEW_3D"
+        bl_region_type = "UI"
+        bl_category = "Omaha"
+
+        def draw(self, context):
+            layout = self.layout
+            run = _ACTIVE_RUN
+            if run is None:
+                layout.label(text="Run blender.py to start")
+                return
+            status = run.status
+            layout.label(text="Phase: " + status["phase"].replace("_", " ").title())
+            layout.label(text=status.get("message", ""))
+            year = status.get("year")
+            if year is not None:
+                layout.label(text=f"Year: {year} / {status['end_year']}")
+            layout.label(text=f"Workers: {status.get('worker_processes', 0)}")
+            elapsed = status.get("elapsed_seconds", 0)
+            layout.label(text=f"Elapsed: {int(elapsed // 60)}m {int(elapsed % 60)}s")
+            if status["phase"] == "building_scene":
+                layout.progress(factor=status.get("scene_progress", 0), text="Scene meshes")
+            elif status["phase"] == "simulation" and year is not None:
+                span = max(1, status["end_year"] - status["start_year"])
+                layout.progress(
+                    factor=max(0, min(1, (year - status["start_year"]) / span)),
+                    text="Simulation year",
+                )
+            heartbeat = status.get("heartbeat_utc")
+            if run.active and heartbeat is not None and time.time() - heartbeat > 10:
+                layout.label(text="No recent heartbeat; check calculation.log", icon="ERROR")
+            if status.get("error"):
+                layout.label(text="See live log or job calculation.log", icon="ERROR")
+            if run.active:
+                row = layout.row()
+                row.enabled = not run.cancel_requested
+                row.operator("omaha.cancel_simulation")
+
+
+def start_blender_job(cfg):
+    """Launch and return immediately; timers do only polling and bounded imports."""
+    global _ACTIVE_RUN, _REGISTERED
+    assert bpy is not None, "Run blender.py inside Blender."
+    from omaha_config import validate_config
+    from omaha_simulation import _worker_python
+
+    if _ACTIVE_RUN is not None and _ACTIVE_RUN.active:
+        raise RuntimeError(
+            "An Omaha job is already running. Use the Omaha panel to cancel it first."
+        )
+    validate_config(cfg)
+    if not _REGISTERED:
+        bpy.utils.register_class(OMAHA_OT_cancel)
+        bpy.utils.register_class(OMAHA_PT_status)
+        atexit.register(_cancel_on_exit)
+        _REGISTERED = True
+    _ACTIVE_RUN = BlenderJob(dict(cfg, data_mode="OFFLINE"), _worker_python(cfg))
+    # Cancel before loading another .blend, while the old data still exists.
+    if _cancel_on_load not in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.append(_cancel_on_load)
+    bpy.app.timers.register(_ACTIVE_RUN.timer_callback, first_interval=0.1)
+    print("[Omaha] Calculation launched. View 3D Viewport > Sidebar (N) > Omaha.")
+    print(f"[Omaha] Job status and calculation.log: {_ACTIVE_RUN.job.directory}")
+    return _ACTIVE_RUN
 
 
 def _new_material(name, color, roughness=0.75, metallic=0.0):
@@ -137,52 +403,6 @@ def _set_object_lifetime(obj, start_year, end_year, base_year):
         driver = obj.driver_add(property_name).driver
         driver.type = "SCRIPTED"
         driver.expression = expression
-
-
-class _MeshBatch:
-    """Bounded mesh chunks, grouped by shared lifetime and material."""
-
-    def __init__(self, collection, name, material, max_vertices=120000, lifetime=None):
-        self.collection = collection
-        self.name = name
-        self.material = material
-        self.max_vertices = max(1000, int(max_vertices))
-        self.lifetime = lifetime
-        self.vertices = []
-        self.faces = []
-        self.chunk = 0
-        self.objects = []
-
-    def add(self, vertices, faces):
-        if not faces:
-            return
-        if self.vertices and len(self.vertices) + len(vertices) > self.max_vertices:
-            self.flush()
-        # One unusually complex OSM polygon can exceed the target chunk size;
-        # retaining its footprint is preferable to dropping or simplifying it.
-        offset = len(self.vertices)
-        self.vertices.extend(vertices)
-        self.faces.extend(tuple(offset + index for index in face) for face in faces)
-
-    def flush(self):
-        assert bpy is not None, "This operation requires Blender."
-        if not self.faces:
-            return
-        name = f"{self.name}_{self.chunk:03d}"
-        mesh = bpy.data.meshes.new(name)
-        mesh["omaha_generated_visualization"] = True
-        mesh.from_pydata(self.vertices, [], self.faces)
-        mesh.update()
-        mesh.materials.append(self.material)
-        obj = bpy.data.objects.new(name, mesh)
-        self.collection.objects.link(obj)
-        obj["omaha_generated_visualization"] = True
-        if self.lifetime is not None:
-            _set_object_lifetime(obj, *self.lifetime)
-        self.objects.append(obj)
-        self.chunk += 1
-        self.vertices = []
-        self.faces = []
 
 
 def _configure_cycles(cfg, scene):
@@ -229,14 +449,14 @@ def _configure_cycles(cfg, scene):
         print("[Omaha] " + scene["render_backend"])
 
 
-def _configure_camera_and_lighting(cfg, grid, scene, collection):
+def _configure_camera_and_lighting(cfg, grid, scene, collection, own=lambda database, item: item):
     assert Vector is not None, "This operation requires Blender."
     assert bpy is not None, "This operation requires Blender."
     center = Vector(((grid.min_x + grid.max_x) * 0.5, (grid.min_y + grid.max_y) * 0.5, 0.025))
     span = max(grid.width, grid.height, 0.1)
-    data = bpy.data.cameras.new("Omaha_Overview_Camera")
+    data = own(bpy.data.cameras, bpy.data.cameras.new("Omaha_Overview_Camera"))
     data["omaha_generated_visualization"] = True
-    camera = bpy.data.objects.new("Omaha_Overview_Camera", data)
+    camera = own(bpy.data.objects, bpy.data.objects.new("Omaha_Overview_Camera", data))
     camera["omaha_generated_visualization"] = True
     collection.objects.link(camera)
     camera.location = center + Vector((0.65 * span, -0.85 * span, 0.9 * span))
@@ -261,15 +481,15 @@ def _configure_camera_and_lighting(cfg, grid, scene, collection):
         max(abs(vertex.x) for vertex in corners) / unit_half_width,
         max(abs(vertex.y) for vertex in corners) / unit_half_height,
     )
-    light_data = bpy.data.lights.new("Omaha_Sun", "SUN")
+    light_data = own(bpy.data.lights, bpy.data.lights.new("Omaha_Sun", "SUN"))
     light_data["omaha_generated_visualization"] = True
     light_data.energy = 2.5
     light_data.angle = math.radians(12.0)
-    sun = bpy.data.objects.new("Omaha_Sun", light_data)
+    sun = own(bpy.data.objects, bpy.data.objects.new("Omaha_Sun", light_data))
     sun["omaha_generated_visualization"] = True
     collection.objects.link(sun)
     sun.rotation_euler = (math.radians(27), math.radians(-19), math.radians(-28))
-    world = bpy.data.worlds.new("Omaha_Atmosphere")
+    world = own(bpy.data.worlds, bpy.data.worlds.new("Omaha_Atmosphere"))
     world["omaha_generated_visualization"] = True
     world.use_nodes = True
     background = world.node_tree.nodes.get("Background")
@@ -278,289 +498,6 @@ def _configure_camera_and_lighting(cfg, grid, scene, collection):
     scene.world = world
     scene.view_settings.view_transform = "AgX"
     return camera
-
-
-def _cleanup_previous_scenes(keep_scene):
-    """Release previous wholly owned scenes; preserve additions and shared objects."""
-    assert bpy is not None, "This operation requires Blender."
-
-    def descendants(collection):
-        result = []
-        for child in collection.children:
-            result.append(child)
-            result.extend(descendants(child))
-        return result
-
-    for old in list(bpy.data.scenes):
-        if old == keep_scene or not old.get("omaha_simulation", False):
-            continue
-        collections = descendants(old.collection)
-        collection_set = set(collections)
-        objects = list(old.objects)
-        safe_collections = all(
-            collection.get("omaha_generated_visualization", False) and collection.users == 1
-            for collection in collections
-        )
-        safe_objects = all(
-            obj.get("omaha_generated_visualization", False)
-            and len(obj.users_scene) == 1
-            and all(collection in collection_set for collection in obj.users_collection)
-            for obj in objects
-        )
-        if not (safe_collections and safe_objects):
-            print(f"[Omaha] Preserved modified or shared prior scene: {old.name}")
-            continue
-        for window in bpy.context.window_manager.windows:
-            if window.scene == old:
-                window.scene = keep_scene
-        bpy.data.scenes.remove(old)
-        for obj in objects:
-            bpy.data.objects.remove(obj, do_unlink=True)
-        for collection in reversed(collections):
-            bpy.data.collections.remove(collection)
-    # Restrict orphan cleanup to script-owned IDs. Never purge the user's data.
-    for database in (
-        bpy.data.meshes,
-        bpy.data.cameras,
-        bpy.data.lights,
-        bpy.data.worlds,
-        bpy.data.materials,
-    ):
-        for data in list(database):
-            if data.users == 0 and data.get("omaha_generated_visualization", False):
-                database.remove(data)
-
-
-def _visual_lifetime_records(versions):
-    """Coalesce persistent buildings across infill versions before meshing.
-
-    An unchanged house belongs to one construction/demolition cohort, even if
-    its site received infill many times. This avoids duplicating its mesh once
-    per snapshot while retaining exclusive replacement lifetimes.
-    """
-    records = {}
-    for site in sorted(versions, key=lambda s: (s["start_year"], s["id"], s["version"])):
-        for category in ("buildings", "surfaces"):
-            for item in site.get(category, []):
-                key = (category, item["id"])
-                if key in records:
-                    existing = records[key]
-                    if existing["end_year"] != site["start_year"]:
-                        raise ValueError(f"Noncontiguous or overlapping lifetime for {item['id']}")
-                    if existing[category][0] != item:
-                        raise ValueError(
-                            f"Persistent geometry changed without a new ID: {item['id']}"
-                        )
-                    existing["end_year"] = site.get("end_year")
-                else:
-                    records[key] = {
-                        "id": item["id"],
-                        "version": 0,
-                        "start_year": int(site["start_year"]),
-                        "end_year": site.get("end_year"),
-                        "buildings": [item] if category == "buildings" else [],
-                        "surfaces": [item] if category == "surfaces" else [],
-                    }
-    return sorted(
-        records.values(),
-        key=lambda record: (
-            record["start_year"],
-            record["end_year"] if record["end_year"] is not None else 99999,
-            record["id"],
-        ),
-    )
-
-
-def build_blender_scene(cfg, grid, baseline, result):
-    """Visualize stored results in a new isolated scene; return bpy.types.Scene.
-
-    Previous unmodified script-owned scenes are released after a successful build.
-    Other scenes and shared or user-added objects are preserved. bpy access stays
-    on Blender's main thread, after the simulation finishes.
-    """
-    if bpy is None or Vector is None:
-        raise RuntimeError("Scene construction must run inside Blender 5.2.2.")
-    if bpy.app.version < (5, 2, 2):
-        raise RuntimeError("This script targets Blender 5.2.2; older versions are unsupported.")
-    scene = bpy.data.scenes.new("OMAHA_SIMULATION")
-    scene["omaha_simulation"] = True
-    scene["model_note"] = (
-        "Experimental demand scenario constrained by real OSM and LODES; not a forecast."
-    )
-    scene["year_at_frame_1"] = int(cfg["base_year"])
-    scene["seed"] = int(cfg["seed"])
-    scene["configuration_json"] = json.dumps(cfg, sort_keys=True)
-    scene.unit_settings.system = "METRIC"
-    scene.unit_settings.scale_length = 1000.0
-    scene.unit_settings.length_unit = "KILOMETERS"
-    if bpy.context.window is not None:
-        bpy.context.window.scene = scene
-    collections = {}
-    for key, name in (
-        ("baseline", "Observed Omaha"),
-        ("land", "Water and Parks"),
-        ("future", "Scenario Development"),
-        ("stage", "Presentation"),
-    ):
-        collection = bpy.data.collections.new(name)
-        collection["omaha_generated_visualization"] = True
-        scene.collection.children.link(collection)
-        collections[key] = collection
-    colors = {
-        "existing": (0.56, 0.55, 0.52),
-        "road": (0.19, 0.21, 0.22),
-        "future_road": (0.23, 0.26, 0.27),
-        "parking": (0.36, 0.37, 0.36),
-        "water": (0.11, 0.27, 0.31),
-        "park": (0.28, 0.40, 0.29),
-        "ground": (0.43, 0.46, 0.40),
-    }
-    materials = {
-        key: _new_material("Omaha_" + key, color, 0.28 if key == "water" else 0.8)
-        for key, color in colors.items()
-    }
-    # Muted warm construction cohorts; visual choices, not observed colors.
-    decade_colors = (
-        (0.62, 0.48, 0.34),
-        (0.65, 0.52, 0.38),
-        (0.68, 0.56, 0.43),
-        (0.71, 0.60, 0.48),
-        (0.74, 0.65, 0.54),
-        (0.77, 0.69, 0.60),
-    )
-    chunk_size = int(cfg.get("mesh_chunk_vertices", 120000))
-    observed = _MeshBatch(
-        collections["baseline"], "OSM_Buildings", materials["existing"], chunk_size
-    )
-    vertical_scale = float(cfg.get("vertical_exaggeration", 1.25))
-    for building in sorted(baseline["buildings"], key=lambda record: record["id"]):
-        for polygon in building["polygons"]:
-            observed.add(*_building_geometry(polygon, building["height_m"] * vertical_scale))
-    observed.flush()
-    roads = _MeshBatch(collections["baseline"], "OSM_Roads", materials["road"], chunk_size)
-    for road in sorted(baseline["roads"], key=lambda record: record["id"]):
-        if road.get("tunnel", False):
-            continue  # The flat map cannot represent terrain above a tunnel.
-        elevation = 0.007 if road.get("bridge", False) else 0.00002
-        roads.add(*_road_geometry(road["points"], road["width_km"], elevation))
-    roads.flush()
-    land_batches = {
-        kind: _MeshBatch(collections["land"], "OSM_" + kind, materials[kind], chunk_size)
-        for kind in ("water", "park")
-    }
-    for feature in sorted(baseline["land"], key=lambda record: record["id"]):
-        kind = feature["kind"]
-        if kind in land_batches:
-            elevation = 0.0 if kind == "water" else -0.000005
-            for polygon in feature["polygons"]:
-                land_batches[kind].add(*_surface_geometry(polygon, elevation))
-    for batch in land_batches.values():
-        batch.flush()
-    ground = {
-        "outer": [
-            (grid.min_x, grid.min_y),
-            (grid.max_x, grid.min_y),
-            (grid.max_x, grid.max_y),
-            (grid.min_x, grid.max_y),
-        ],
-        "holes": [],
-    }
-    ground_batch = _MeshBatch(
-        collections["stage"], "Flat_Study_Ground", materials["ground"], chunk_size
-    )
-    ground_batch.add(*_surface_geometry(ground, -0.00002))
-    ground_batch.flush()
-    batches = {}
-    base_year = int(cfg["base_year"])
-    base_decade = (base_year // 10) * 10
-    versions = _visual_lifetime_records(result["versions"])
-    previous_lifetime = None
-    for site in versions:
-        start, end = int(site["start_year"]), site.get("end_year")
-        if end is not None:
-            end = int(end)
-        if end is not None and end <= start:
-            raise ValueError(f"Invalid lifetime for site {site['id']}, version {site['version']}")
-        lifetime = (start, end)
-        if lifetime != previous_lifetime:
-            for batch in batches.values():
-                batch.flush()
-            batches = {}
-            previous_lifetime = lifetime
-        for building in sorted(site["buildings"], key=lambda record: record["id"]):
-            year = int(building.get("construction_year", start))
-            decade = (year // 10) * 10
-            material_key = "future_" + str(decade)
-            if material_key not in materials:
-                index = min(len(decade_colors) - 1, max(0, (decade - base_decade) // 10))
-                materials[material_key] = _new_material(
-                    "Future_" + str(decade) + "s", decade_colors[index]
-                )
-            key = (start, end, material_key)
-            if key not in batches:
-                name = f"Scenario_{start}_{end or 'onward'}_{material_key}"
-                batches[key] = _MeshBatch(
-                    collections["future"],
-                    name,
-                    materials[material_key],
-                    chunk_size,
-                    (start, end, base_year),
-                )
-            for volume in building.get("volumes") or [building]:
-                polygon = {"outer": volume["poly"], "holes": volume.get("holes", [])}
-                batches[key].add(
-                    *_building_geometry(
-                        polygon,
-                        volume["height_m"] * vertical_scale,
-                        volume.get("z0_m", 0.0) * vertical_scale,
-                    )
-                )
-        for surface in site.get("surfaces", []):
-            material_key = "future_road" if surface["kind"] == "road" else "parking"
-            key = (start, end, material_key)
-            if key not in batches:
-                name = f"Scenario_{start}_{end or 'onward'}_{material_key}"
-                batches[key] = _MeshBatch(
-                    collections["future"],
-                    name,
-                    materials[material_key],
-                    chunk_size,
-                    (start, end, base_year),
-                )
-            polygon = {"outer": surface["poly"], "holes": surface.get("holes", [])}
-            batches[key].add(*_surface_geometry(polygon, 0.00007))
-    for batch in batches.values():
-        batch.flush()
-    # One frame per saved year. Drivers survive reopening and background rendering.
-    scene.frame_start = 1
-    scene.frame_end = int(cfg["end_year"]) - base_year + 1
-    scene.render.fps = int(cfg.get("render_fps", 2))
-    for year in range(base_year, int(cfg["end_year"]) + 1):
-        scene.timeline_markers.new(str(year), frame=year - base_year + 1)
-    resolution = cfg.get("render_resolution", [1600, 1000])
-    scene.render.resolution_x, scene.render.resolution_y = map(int, resolution)
-    scene.render.resolution_percentage = 100
-    scene.render.image_settings.file_format = "PNG"
-    scene.render.image_settings.color_mode = "RGB"
-    scene.render.film_transparent = False
-    _configure_cycles(cfg, scene)
-    _configure_camera_and_lighting(cfg, grid, scene, collections["stage"])
-    scene.frame_set(1)
-    if bpy.context.screen is not None:
-        for area in bpy.context.screen.areas:
-            if area.type == "VIEW_3D":
-                space = area.spaces.active
-                space.clip_start = 0.001
-                space.clip_end = max(grid.width, grid.height) * 20.0
-                space.shading.color_type = "MATERIAL"
-                space.region_3d.view_perspective = "CAMERA"
-    _cleanup_previous_scenes(scene)
-    print(
-        f"[Omaha] Scene {scene.name}: frame 1 = {base_year}; "
-        f"frame {scene.frame_end} = {cfg['end_year']}. "
-        f"Jump to year Y with scene.frame_set(Y - {base_year} + 1)."
-    )
-    return scene
 
 
 def finalize_blender_output(cfg, scene):
