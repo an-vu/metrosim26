@@ -6,7 +6,7 @@ checkpoints, geometry lifetimes, and incremental Blender importer.
 
 ## Enable future projects and infrastructure
 
-In `omaha_config.py`:
+In `metrosim26/config.py`:
 
 ```python
 ENABLE_PROJECTS = True
@@ -21,7 +21,7 @@ their own versioned configuration identity.
 
 ### Named development
 
-`omaha_projects.py` promotes sufficiently large **demand-selected, geometry-validated
+`metrosim26/projects.py` promotes sufficiently large **demand-selected, geometry-validated
 site plans** into fictional projects. It does not schedule a mall at a fixed date or
 choose a random location. The normal ranking/archetype rules still select development.
 
@@ -56,7 +56,7 @@ no recursive compounding. Centrality and worker geometry inputs remain fixed.
 
 ### Major infrastructure
 
-`omaha_infrastructure.py` initially supports **collector extensions and major access
+`metrosim26/infrastructure.py` initially supports **collector extensions and major access
 roads**. It preserves existing OSM roads and procedural local site roads. Widening,
 bridges, transit, ramps, and interchanges are deferred; highway/bridge crossings are
 blocked rather than silently treated as ordinary at-grade junctions.
@@ -97,7 +97,7 @@ TIMELINE_START_YEAR = 2006
 HISTORICAL_EVIDENCE_FILE = "historical_evidence.json"
 ```
 
-A relative evidence path is resolved beside `omaha_config.py`. No historical data
+A relative evidence path is resolved from the repository root, beside `blender.py`. No historical data
 is bundled or fetched. Leave the filename empty for an explicitly **unknown** past:
 undated features first become visible at the baseline year, not at an invented date.
 An empty historical scene does **not** mean those buildings or roads were absent.
@@ -138,7 +138,7 @@ footprints are proxies, not reconstructed historical shapes. Demolished building
 historical population/employment, past road geometry, and land-cover raster evidence
 need future adapters; this code does not fabricate them or reverse future growth.
 
-`omaha_history.py` is the evidence-to-state boundary. Blender receives the same
+`metrosim26/history.py` is the evidence-to-state boundary. Blender receives the same
 lifetime representation regardless of source. Frame mapping is
 `year - timeline_start_year + 1`: with 2006 as the start, 2026 is frame 21 and 2076
 is frame 71. Future demand still starts at `BASE_YEAR`, independently of that mapping.

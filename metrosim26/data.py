@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from omaha_config import (
+from metrosim26.config import (
     ARCH_NAMES,
     COMMERCIAL,
     EMPTY,
@@ -34,8 +34,8 @@ from omaha_config import (
     SUBURBAN,
     URBAN_RES,
 )
-from omaha_runtime import report_progress
-from omaha_workers import (
+from metrosim26.runtime import report_progress
+from metrosim26.workers import (
     _bbox,
     _boxes_overlap,
     _json_default,
@@ -300,7 +300,7 @@ def inspect_cache(cfg, force=False):
 
 def require_input_cache(cfg):
     """Fail fast on missing files; otherwise report all validation failures. No HTTP."""
-    print("Checking local Omaha input cache (no network)...", flush=True)
+    print("Checking local MetroSim26 input cache (no network)...", flush=True)
     report_progress("validating_cache", "Validating input cache")
     specs = expected_inputs(cfg)
     problems = [(spec, "missing") for spec in specs if not spec.path.is_file()]
@@ -310,9 +310,9 @@ def require_input_cache(cfg):
         details = "\n".join(f"- {spec.label}: {reason}\n  {spec.path}" for spec, reason in problems)
         mode = "--preview" if cfg["preview_mode"] else "--full"
         raise FileNotFoundError(
-            "Required Omaha input cache is incomplete.\n\n"
+            "Required MetroSim26 input cache is incomplete.\n\n"
             + details
-            + f"\n\nRun prefetch_omaha_data.py {mode} outside Blender first. "
+            + f"\n\nRun scripts/prefetch_data.py {mode} outside Blender first. "
             "Previously completed files will be reused."
         )
     print("Local input cache validated.", flush=True)
@@ -350,7 +350,7 @@ def _download_once(endpoint, post_data, temp_path, socket_timeout):
     request = urllib.request.Request(
         endpoint,
         data=post_data,
-        headers={"User-Agent": "OmahaUrbanSimulation/3 (local research visualization)"},
+        headers={"User-Agent": "MetroSim26/3 (local research visualization)"},
     )
     with urllib.request.urlopen(request, timeout=socket_timeout) as response:
         source_url = response.geturl()
@@ -467,7 +467,7 @@ def _download_cached(spec, cfg):
     if cfg.get("data_mode", "OFFLINE").upper() != "ONLINE":
         raise FileNotFoundError(
             f"{spec.label} is missing/invalid: {spec.path}. "
-            "Run prefetch_omaha_data.py outside Blender first."
+            "Run scripts/prefetch_data.py outside Blender first."
         )
     spec.path.parent.mkdir(parents=True, exist_ok=True)
     attempts = int(cfg.get("download_attempts", 3))
@@ -578,7 +578,7 @@ def _write_cache_manifest(cfg, specs, valid, problems):
 
 
 def print_cache_report(cfg, specs, valid, problems):
-    print("\n================================================\nOMAHA DATA CACHE")
+    print("\n================================================\nMETROSIM26 DATA CACHE")
     print("Study area: " + ("Omaha preview" if cfg["preview_mode"] else "Omaha / Council Bluffs"))
     osm = [spec for spec in specs if spec.kind == "osm"]
     print(f"OSM tiles: {sum(str(spec.path) in valid for spec in osm)} / {len(osm)} valid")
@@ -591,7 +591,7 @@ def print_cache_report(cfg, specs, valid, problems):
         for spec, reason in problems:
             print(f"- {spec.label}: {reason}\n  {spec.path}")
         print(
-            "Re-run prefetch_omaha_data.py with the same options. Completed files will be reused."
+            "Re-run scripts/prefetch_data.py with the same options. Completed files will be reused."
         )
     else:
         print("\nCACHE READY FOR BLENDER")

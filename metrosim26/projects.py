@@ -6,8 +6,8 @@ from copy import deepcopy
 
 import numpy as np
 
-from omaha_config import HIGHRISE, INDUSTRIAL, MIXED, OFFICE, RETAIL, SUBURBAN, URBAN_RES
-from omaha_workers import stable_seed
+from metrosim26.config import HIGHRISE, INDUSTRIAL, MIXED, OFFICE, RETAIL, SUBURBAN, URBAN_RES
+from metrosim26.workers import stable_seed
 
 
 def fictional_name(seed, identity, suffix):

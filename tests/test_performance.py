@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import numpy as np
 from test_simulation import config, rectangle, synthetic_baseline
-from test_simulation import omaha as m
+from test_simulation import simulation as m
 from test_simulation import workers as geometry
 
 
@@ -139,11 +139,11 @@ class PerformanceTests(unittest.TestCase):
         ]
         geometry.prepare_spatial_index(baseline, grid)
         with tempfile.TemporaryDirectory() as tmp:
-            m.omaha_workers.write_worker_state(tmp, cfg, grid, baseline)
-            wc, wg, wb = m.omaha_workers.load_worker_state(tmp)
+            m.workers.write_worker_state(tmp, cfg, grid, baseline)
+            wc, wg, wb = m.workers.load_worker_state(tmp)
             for arch in range(1, 9):
                 expected = m.make_site_plan(cfg, grid, baseline, 4, 4, arch, 0, 2027)
-                actual = m.omaha_workers.make_site_plan(wc, wg, wb, 4, 4, arch, 0, 2027)
+                actual = m.workers.make_site_plan(wc, wg, wb, 4, 4, arch, 0, 2027)
                 self.assertEqual(
                     json.dumps(expected, sort_keys=True), json.dumps(actual, sort_keys=True)
                 )

@@ -13,12 +13,12 @@ from typing import Any
 
 import numpy as np
 
-from omaha_config import timeline_start
-from omaha_runtime import CalculationJob, write_json
-from omaha_scene import (
+from metrosim26.config import timeline_start
+from metrosim26.runtime import CalculationJob, write_json
+from metrosim26.scene import (
     _building_geometry as _building_geometry,
 )
-from omaha_scene import (
+from metrosim26.scene import (
     _visual_lifetime_records as _visual_lifetime_records,
 )
 
@@ -57,9 +57,9 @@ class SceneImport:
         self.cfg = cfg
         grid = SimpleNamespace(**manifest["grid"])
         self.total = len(manifest["packets"])
-        scene = self.own(bpy.data.scenes, bpy.data.scenes.new("OMAHA_SIMULATION"))
+        scene = self.own(bpy.data.scenes, bpy.data.scenes.new("METROSIM26_SIMULATION"))
         self.scene = scene
-        scene["omaha_simulation"] = True
+        scene["metrosim26_simulation"] = True
         scene["model_note"] = (
             "Experimental demand scenario constrained by real OSM and LODES; not a forecast."
         )
@@ -90,7 +90,7 @@ class SceneImport:
             ("infrastructure", "Scenario Infrastructure (Fictional)"),
         ):
             collection = self.own(bpy.data.collections, bpy.data.collections.new(name))
-            collection["omaha_generated_visualization"] = True
+            collection["metrosim26_generated_visualization"] = True
             scene.collection.children.link(collection)
             collections[key] = collection
             yield
@@ -105,12 +105,12 @@ class SceneImport:
                 indices, offsets = arrays["indices"], arrays["offsets"]
                 faces = [indices[a:b].tolist() for a, b in zip(offsets[:-1], offsets[1:])]
             mesh = self.own(bpy.data.meshes, bpy.data.meshes.new(packet["name"]))
-            mesh["omaha_generated_visualization"] = True
+            mesh["metrosim26_generated_visualization"] = True
             mesh.from_pydata(vertices, [], faces)
             mesh.update()
             mesh.materials.append(materials[packet["material"]])
             obj = self.own(bpy.data.objects, bpy.data.objects.new(packet["name"], mesh))
-            obj["omaha_generated_visualization"] = True
+            obj["metrosim26_generated_visualization"] = True
             for key, value in packet.get("properties", {}).items():
                 obj[key] = value
             collections[packet["collection"]].objects.link(obj)
@@ -225,7 +225,7 @@ class BlenderJob:
             )
             self.publish(force=True)
             self.active = False
-            print("[Omaha] " + self.status["message"])
+            print("[MetroSim26] " + self.status["message"])
             return None
         if self.importer is None:
             code = self.job.poll()
@@ -235,7 +235,7 @@ class BlenderJob:
             self.status = dict(self.job.status)
             phase = self.status.get("phase")
             if phase != self.last_phase:
-                print("[Omaha] " + self.status.get("message", str(phase)))
+                print("[MetroSim26] " + self.status.get("message", str(phase)))
                 self.last_phase = phase
             if code is None:
                 return 0.25
@@ -249,7 +249,7 @@ class BlenderJob:
             self.importer = SceneImport(self.job.directory / "scene")
             self.scene_started = time.monotonic()
             self.status.update(phase="building_scene", complete=False, worker_processes=0)
-            print("[Omaha] Blender scene construction: importing bounded mesh chunks")
+            print("[MetroSim26] Blender scene construction: importing bounded mesh chunks")
         try:
             next(self.importer.steps)
         except StopIteration:
@@ -310,8 +310,8 @@ def _cancel_on_load(*_args):
 
 if bpy is not None:
 
-    class OMAHA_OT_cancel(bpy.types.Operator):
-        bl_idname = "omaha.cancel_simulation"
+    class METROSIM26_OT_cancel(bpy.types.Operator):
+        bl_idname = "metrosim26.cancel_simulation"
         bl_label = "Cancel Simulation"
 
         def execute(self, context):
@@ -319,12 +319,12 @@ if bpy is not None:
                 _ACTIVE_RUN.cancel()
             return {"FINISHED"}
 
-    class OMAHA_PT_status(bpy.types.Panel):
-        bl_label = "Omaha Simulation"
-        bl_idname = "OMAHA_PT_status"
+    class METROSIM26_PT_status(bpy.types.Panel):
+        bl_label = "MetroSim26 Simulation"
+        bl_idname = "METROSIM26_PT_status"
         bl_space_type = "VIEW_3D"
         bl_region_type = "UI"
-        bl_category = "Omaha"
+        bl_category = "MetroSim26"
 
         def draw(self, context):
             layout = self.layout
@@ -357,24 +357,24 @@ if bpy is not None:
             if run.active:
                 row = layout.row()
                 row.enabled = not run.cancel_requested
-                row.operator("omaha.cancel_simulation")
+                row.operator("metrosim26.cancel_simulation")
 
 
 def start_blender_job(cfg):
     """Launch and return immediately; timers do only polling and bounded imports."""
     global _ACTIVE_RUN, _REGISTERED
     assert bpy is not None, "Run blender.py inside Blender."
-    from omaha_config import validate_config
-    from omaha_simulation import _worker_python
+    from metrosim26.config import validate_config
+    from metrosim26.simulation import _worker_python
 
     if _ACTIVE_RUN is not None and _ACTIVE_RUN.active:
         raise RuntimeError(
-            "An Omaha job is already running. Use the Omaha panel to cancel it first."
+            "A MetroSim26 job is already running. Use the MetroSim26 panel to cancel it first."
         )
     validate_config(cfg)
     if not _REGISTERED:
-        bpy.utils.register_class(OMAHA_OT_cancel)
-        bpy.utils.register_class(OMAHA_PT_status)
+        bpy.utils.register_class(METROSIM26_OT_cancel)
+        bpy.utils.register_class(METROSIM26_PT_status)
         atexit.register(_cancel_on_exit)
         _REGISTERED = True
     _ACTIVE_RUN = BlenderJob(dict(cfg, data_mode="OFFLINE"), _worker_python(cfg))
@@ -382,15 +382,15 @@ def start_blender_job(cfg):
     if _cancel_on_load not in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.append(_cancel_on_load)
     bpy.app.timers.register(_ACTIVE_RUN.timer_callback, first_interval=0.1)
-    print("[Omaha] Calculation launched. View 3D Viewport > Sidebar (N) > Omaha.")
-    print(f"[Omaha] Job status and calculation.log: {_ACTIVE_RUN.job.directory}")
+    print("[MetroSim26] Calculation launched. View 3D Viewport > Sidebar (N) > MetroSim26.")
+    print(f"[MetroSim26] Job status and calculation.log: {_ACTIVE_RUN.job.directory}")
     return _ACTIVE_RUN
 
 
 def _new_material(name, color, roughness=0.75, metallic=0.0):
     assert bpy is not None, "This operation requires Blender."
     material = bpy.data.materials.new(name)
-    material["omaha_generated_visualization"] = True
+    material["metrosim26_generated_visualization"] = True
     material.use_nodes = True
     material.diffuse_color = (*color, 1.0)
     shader = material.node_tree.nodes.get("Principled BSDF")
@@ -457,11 +457,11 @@ def _configure_cycles(cfg, scene):
         message = f"OptiX unavailable ({failure}). Cycles will render on the CPU."
         if cfg.get("require_optix", False):
             raise RuntimeError(message + " Set require_optix=False to permit CPU rendering.")
-        print("[Omaha] " + message)
+        print("[MetroSim26] " + message)
         scene.cycles.device = "CPU"
         scene["render_backend"] = "CPU fallback: " + failure
     else:
-        print("[Omaha] " + scene["render_backend"])
+        print("[MetroSim26] " + scene["render_backend"])
 
 
 def _configure_camera_and_lighting(cfg, grid, scene, collection, own=lambda database, item: item):
@@ -469,10 +469,10 @@ def _configure_camera_and_lighting(cfg, grid, scene, collection, own=lambda data
     assert bpy is not None, "This operation requires Blender."
     center = Vector(((grid.min_x + grid.max_x) * 0.5, (grid.min_y + grid.max_y) * 0.5, 0.025))
     span = max(grid.width, grid.height, 0.1)
-    data = own(bpy.data.cameras, bpy.data.cameras.new("Omaha_Overview_Camera"))
-    data["omaha_generated_visualization"] = True
-    camera = own(bpy.data.objects, bpy.data.objects.new("Omaha_Overview_Camera", data))
-    camera["omaha_generated_visualization"] = True
+    data = own(bpy.data.cameras, bpy.data.cameras.new("MetroSim26_Overview_Camera"))
+    data["metrosim26_generated_visualization"] = True
+    camera = own(bpy.data.objects, bpy.data.objects.new("MetroSim26_Overview_Camera", data))
+    camera["metrosim26_generated_visualization"] = True
     collection.objects.link(camera)
     camera.location = center + Vector((0.65 * span, -0.85 * span, 0.9 * span))
     camera.rotation_euler = (center - camera.location).to_track_quat("-Z", "Y").to_euler()
@@ -496,16 +496,16 @@ def _configure_camera_and_lighting(cfg, grid, scene, collection, own=lambda data
         max(abs(vertex.x) for vertex in corners) / unit_half_width,
         max(abs(vertex.y) for vertex in corners) / unit_half_height,
     )
-    light_data = own(bpy.data.lights, bpy.data.lights.new("Omaha_Sun", "SUN"))
-    light_data["omaha_generated_visualization"] = True
+    light_data = own(bpy.data.lights, bpy.data.lights.new("MetroSim26_Sun", "SUN"))
+    light_data["metrosim26_generated_visualization"] = True
     light_data.energy = 2.5
     light_data.angle = math.radians(12.0)
-    sun = own(bpy.data.objects, bpy.data.objects.new("Omaha_Sun", light_data))
-    sun["omaha_generated_visualization"] = True
+    sun = own(bpy.data.objects, bpy.data.objects.new("MetroSim26_Sun", light_data))
+    sun["metrosim26_generated_visualization"] = True
     collection.objects.link(sun)
     sun.rotation_euler = (math.radians(27), math.radians(-19), math.radians(-28))
-    world = own(bpy.data.worlds, bpy.data.worlds.new("Omaha_Atmosphere"))
-    world["omaha_generated_visualization"] = True
+    world = own(bpy.data.worlds, bpy.data.worlds.new("MetroSim26_Atmosphere"))
+    world["metrosim26_generated_visualization"] = True
     world.use_nodes = True
     background = world.node_tree.nodes.get("Background")
     background.inputs["Color"].default_value = (0.68, 0.75, 0.84, 1.0)
@@ -521,21 +521,21 @@ def finalize_blender_output(cfg, scene):
     output_dir = Path(cfg.get("run_directory", cfg["output_dir"])).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     animation_dir = output_dir / "frames"
-    scene.render.filepath = str(animation_dir / "omaha_")
+    scene.render.filepath = str(animation_dir / "metrosim26_")
     if cfg.get("save_blend", False):
-        path = output_dir / "omaha_simulation.blend"
+        path = output_dir / "simulation.blend"
         bpy.ops.wm.save_as_mainfile(filepath=str(path), copy=True)
-        print("[Omaha] Saved visualization: " + str(path))
+        print("[MetroSim26] Saved visualization: " + str(path))
     original_frame = scene.frame_current
     try:
         if cfg.get("render_final", False):
             scene.frame_set(scene.frame_end)
-            scene.render.filepath = str(output_dir / f"omaha_{cfg['end_year']}.png")
+            scene.render.filepath = str(output_dir / f"metrosim26_{cfg['end_year']}.png")
             bpy.ops.render.render(write_still=True, scene=scene.name)
         if cfg.get("render_animation", False):
             animation_dir.mkdir(parents=True, exist_ok=True)
-            scene.render.filepath = str(animation_dir / "omaha_")
+            scene.render.filepath = str(animation_dir / "metrosim26_")
             bpy.ops.render.render(animation=True, scene=scene.name)
     finally:
         scene.frame_set(original_frame)
-        scene.render.filepath = str(animation_dir / "omaha_")
+        scene.render.filepath = str(animation_dir / "metrosim26_")

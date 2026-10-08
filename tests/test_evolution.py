@@ -11,12 +11,12 @@ from unittest.mock import patch
 
 import numpy as np
 from test_performance import performance_case
-from test_simulation import config, omaha, rectangle, synthetic_baseline, visual, workers
+from test_simulation import config, rectangle, simulation, synthetic_baseline, visual, workers
 
-from omaha_history import build_history, read_continuation, year_to_frame
-from omaha_infrastructure import Infrastructure, clear_corridor, generated_index
-from omaha_projects import Projects, capacity
-from omaha_scene import _visual_lifetime_records, export_scene
+from metrosim26.history import build_history, read_continuation, year_to_frame
+from metrosim26.infrastructure import Infrastructure, clear_corridor, generated_index
+from metrosim26.projects import Projects, capacity
+from metrosim26.scene import _visual_lifetime_records, export_scene
 
 
 class ProjectTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class ProjectTests(unittest.TestCase):
                 id="site",
                 version=0,
                 layout_epoch=0,
-                arch=omaha.SUBURBAN,
+                arch=simulation.SUBURBAN,
                 gx=2,
                 gy=2,
                 start_year=2027,
@@ -98,21 +98,21 @@ class ProjectTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
             one, two = Path(tmp) / "serial", Path(tmp) / "parallel"
-            first = omaha.run_simulation(cfg, grid, deepcopy(baseline), one)
+            first = simulation.run_simulation(cfg, grid, deepcopy(baseline), one)
             cfg.update(enable_parallel_compute=True, cpu_workers=2, validate_parallel_results=True)
-            second = omaha.run_simulation(cfg, grid, deepcopy(baseline), two)
+            second = simulation.run_simulation(cfg, grid, deepcopy(baseline), two)
             self.assertTrue(first["projects"])
             self.assertTrue(any("project_id" not in s for s in first["versions"]))
             self.assertEqual(first["projects"], second["projects"])
             self.assertEqual(first["events"], second["events"])
             for path in one.iterdir():
                 self.assertEqual(path.read_bytes(), (two / path.name).read_bytes(), path.name)
-            loaded = omaha.load_simulation(two, cfg, grid)
+            loaded = simulation.load_simulation(two, cfg, grid)
             self.assertEqual(loaded["projects"], first["projects"])
             self.assertEqual(loaded["events"], first["events"])
             for state in first["states"]:
                 metrics = state["metrics"]
-                housing = sum(omaha.site_capacity(s)[0] for s in state["sites"])
+                housing = sum(simulation.site_capacity(s)[0] for s in state["sites"])
                 self.assertAlmostEqual(
                     metrics["total_housing_capacity"],
                     first["baseline_capacity"]["housing_capacity"] + housing,
@@ -139,8 +139,8 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(config.run_directory(cfg), config.run_directory(old))
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
             a, b = Path(tmp) / "new", Path(tmp) / "old"
-            omaha.run_simulation(cfg, grid, deepcopy(baseline), a)
-            omaha.run_simulation(old, grid, deepcopy(baseline), b)
+            simulation.run_simulation(cfg, grid, deepcopy(baseline), a)
+            simulation.run_simulation(old, grid, deepcopy(baseline), b)
             self.assertEqual(
                 sorted(p.name for p in a.iterdir()), sorted(p.name for p in b.iterdir())
             )
@@ -176,7 +176,7 @@ class InfrastructureTests(unittest.TestCase):
             infra.propose(
                 year,
                 baseline["urban"],
-                omaha.neighbor_fraction(baseline["urban"]),
+                simulation.neighbor_fraction(baseline["urban"]),
                 0,
                 0,
                 {},
@@ -193,7 +193,7 @@ class InfrastructureTests(unittest.TestCase):
             infrastructure_pressure_years=2,
             infrastructure_max_projects=1,
         )
-        grid = omaha.Grid((41.20, -96.05, 41.225, -96.015), 0.35)
+        grid = simulation.Grid((41.20, -96.05, 41.225, -96.015), 0.35)
         cfg["bounds"] = list(grid.bounds)
         baseline = synthetic_baseline(grid)
         baseline["road_access"][:] = 0.12
@@ -215,7 +215,7 @@ class InfrastructureTests(unittest.TestCase):
             events = []
             projects = Projects(cfg, grid, events)
             infra = Infrastructure(cfg, grid, baseline, events)
-            neighbors = omaha.neighbor_fraction(baseline["urban"])
+            neighbors = simulation.neighbor_fraction(baseline["urban"])
             infra.propose(2027, baseline["urban"], neighbors, 100, 100, {}, projects)
             self.assertFalse(infra.records)
             infra.propose(2028, baseline["urban"], neighbors, 100, 100, {}, projects)
@@ -279,7 +279,7 @@ class InfrastructureTests(unittest.TestCase):
             max_sites_per_year=1,
         )
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
-            result = omaha.run_simulation(cfg, grid, baseline, Path(tmp) / "simulation")
+            result = simulation.run_simulation(cfg, grid, baseline, Path(tmp) / "simulation")
             self.assertTrue(result["infrastructure"])
             record = result["infrastructure"][0]
             for site in result["versions"]:
@@ -312,8 +312,8 @@ class HistoricalTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
             cfg["output_dir"] = tmp
-            with patch.object(omaha, "build_baseline", return_value=baseline):
-                _, _, result = omaha.prepare_simulation(cfg)
+            with patch.object(simulation, "build_baseline", return_value=baseline):
+                _, _, result = simulation.prepare_simulation(cfg)
             directory = Path(result["run_directory"]) / "simulation"
             contract = read_continuation(directory)
             self.assertTrue(contract["projects"]["pending_sites"])
@@ -324,12 +324,12 @@ class HistoricalTests(unittest.TestCase):
                 any(b["construction_year"] > 2028 for s in pending.values() for b in s["buildings"])
             )
             cfg["run_mode"] = "REPLAY"
-            _, _, loaded = omaha.prepare_simulation(cfg)
+            _, _, loaded = simulation.prepare_simulation(cfg)
             self.assertEqual(loaded["projects"], result["projects"])
             self.assertEqual(loaded["history"], result["history"])
             cfg.update(run_mode="SIMULATE", end_year=2030)
-            with patch.object(omaha, "build_baseline", return_value=deepcopy(baseline)):
-                _, _, long = omaha.prepare_simulation(cfg)
+            with patch.object(simulation, "build_baseline", return_value=deepcopy(baseline)):
+                _, _, long = simulation.prepare_simulation(cfg)
             later = Path(long["run_directory"]) / "simulation"
             for year in (2026, 2027, 2028):
                 self.assertEqual(
@@ -367,8 +367,8 @@ class HistoricalTests(unittest.TestCase):
                 )
             )
             cfg["historical_evidence_file"] = str(evidence)
-            with patch.object(omaha, "build_baseline", return_value=baseline):
-                _, _, result = omaha.prepare_simulation(cfg)
+            with patch.object(simulation, "build_baseline", return_value=baseline):
+                _, _, result = simulation.prepare_simulation(cfg)
             self.assertEqual(result["states"][0]["year"], 2006)
             self.assertEqual(result["states"][0]["provenance"], "historically_reconstructed")
             self.assertFalse(result["states"][0]["building_visibility"])
@@ -387,9 +387,9 @@ class HistoricalTests(unittest.TestCase):
             )
             cfg["run_mode"] = "REPLAY"
             with patch.object(
-                omaha, "build_baseline", side_effect=AssertionError("Rebuilt baseline")
+                simulation, "build_baseline", side_effect=AssertionError("Rebuilt baseline")
             ):
-                _, _, loaded = omaha.prepare_simulation(cfg)
+                _, _, loaded = simulation.prepare_simulation(cfg)
             self.assertEqual(loaded["history"], result["history"])
             manifest = export_scene(cfg, grid, baseline, loaded, Path(tmp) / "mesh")
             historical = [

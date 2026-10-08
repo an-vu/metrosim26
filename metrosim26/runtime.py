@@ -81,7 +81,7 @@ class CalculationJob:
     """Nonblocking child lifecycle; safe to poll from a Blender timer."""
 
     def __init__(self, cfg, executable):
-        from omaha_config import run_directory
+        from metrosim26.config import run_directory
 
         self.directory = run_directory(cfg) / "jobs" / uuid.uuid4().hex
         self.directory.mkdir(parents=True)
@@ -108,7 +108,8 @@ class CalculationJob:
         # A disk log cannot fill a pipe and deadlock the calculation process.
         with (self.directory / "calculation.log").open("wb") as log:
             self.process = subprocess.Popen(
-                [executable, "-u", str(Path(__file__).resolve()), str(self.directory)],
+                [executable, "-u", "-m", "metrosim26.runtime", str(self.directory)],
+                cwd=Path(__file__).resolve().parents[1],
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 env=env,
@@ -170,9 +171,9 @@ class CalculationJob:
 
 def run_job(directory):
     global _REPORTER
-    from omaha_config import run_directory
-    from omaha_scene import export_scene
-    from omaha_simulation import prepare_simulation
+    from metrosim26.config import run_directory
+    from metrosim26.scene import export_scene
+    from metrosim26.simulation import prepare_simulation
 
     directory = Path(directory).resolve()
     cfg = json.loads((directory / "config.json").read_text(encoding="utf8"))
@@ -224,5 +225,5 @@ def run_job(directory):
 
 if __name__ == "__main__":
     # Data/simulation imports must see the same reporter as this script entry point.
-    sys.modules["omaha_runtime"] = sys.modules[__name__]
+    sys.modules["metrosim26.runtime"] = sys.modules[__name__]
     raise SystemExit(run_job(sys.argv[1]))

@@ -14,11 +14,11 @@ from typing import Any
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import omaha_blender as visual
-import omaha_config as config
-import omaha_data as data
-import omaha_simulation as omaha
-import omaha_workers as workers
+import metrosim26.blender_ui as visual
+import metrosim26.config as config
+import metrosim26.data as data
+import metrosim26.simulation as simulation
+import metrosim26.workers as workers
 
 
 def rectangle(x0, y0, x1, y1):
@@ -48,7 +48,7 @@ def synthetic_baseline(grid) -> dict[str, Any]:
     b["urban"] = np.zeros(grid.shape, dtype=bool)
     b["arch"] = np.zeros(grid.shape, dtype=np.uint8)
     b["urban"][2:4, 2:4] = True
-    b["arch"][b["urban"]] = omaha.SUBURBAN
+    b["arch"][b["urban"]] = simulation.SUBURBAN
     b["developed_fraction"][b["urban"]] = 0.15
     b["jobs"][2:4, 2:4] = 100
     b["residence_jobs"][2:4, 2:4] = 100
@@ -67,7 +67,7 @@ def synthetic_baseline(grid) -> dict[str, Any]:
 
 class SpatialTests(unittest.TestCase):
     def setUp(self):
-        self.grid = omaha.Grid((41.20, -96.05, 41.225, -96.015), 0.35)
+        self.grid = simulation.Grid((41.20, -96.05, 41.225, -96.015), 0.35)
         self.b = synthetic_baseline(self.grid)
 
     def test_grid_rejects_just_outside_west_and_partial_edges(self):
@@ -117,7 +117,7 @@ class SpatialTests(unittest.TestCase):
                 "id": "way:99",
                 "polygons": [{"outer": island, "holes": []}],
                 "height_m": 8.0,
-                "arch": omaha.SUBURBAN,
+                "arch": simulation.SUBURBAN,
             }
         ]
         self.b["spatial_index"] = workers.prepare_spatial_index(self.b, g)
@@ -159,7 +159,7 @@ class SpatialTests(unittest.TestCase):
 
 class EngineTests(unittest.TestCase):
     def setUp(self):
-        self.grid = omaha.Grid((41.20, -96.05, 41.225, -96.015), 0.35)
+        self.grid = simulation.Grid((41.20, -96.05, 41.225, -96.015), 0.35)
         self.baseline = synthetic_baseline(self.grid)
         self.cfg = config.make_config(preview=True)
         self.cfg.update(
@@ -176,7 +176,7 @@ class EngineTests(unittest.TestCase):
         )
 
     def test_all_archetypes_fit_and_do_not_overlap(self):
-        for arch in range(omaha.SUBURBAN, omaha.HIGHRISE + 1):
+        for arch in range(simulation.SUBURBAN, simulation.HIGHRISE + 1):
             with self.subTest(arch=arch):
                 self.baseline["road_angle"][:] = 0.31
                 plan = workers.make_site_plan(
@@ -198,16 +198,25 @@ class EngineTests(unittest.TestCase):
                         self.assertFalse(workers.rings_intersect(building["poly"], parking["poly"]))
 
     def test_infill_retains_existing_buildings_and_adds_distinct_parcels(self):
-        site = omaha.create_site(
-            self.cfg, self.grid, self.baseline, 4, 4, omaha.SUBURBAN, 2027, 2.0, 0.0, "greenfield"
-        )
-        expanded = omaha.create_site(
+        site = simulation.create_site(
             self.cfg,
             self.grid,
             self.baseline,
             4,
             4,
-            omaha.SUBURBAN,
+            simulation.SUBURBAN,
+            2027,
+            2.0,
+            0.0,
+            "greenfield",
+        )
+        expanded = simulation.create_site(
+            self.cfg,
+            self.grid,
+            self.baseline,
+            4,
+            4,
+            simulation.SUBURBAN,
             2028,
             1.0,
             0.0,
@@ -225,11 +234,13 @@ class EngineTests(unittest.TestCase):
 
     def test_determinism_reload_and_demand_accounting(self):
         with tempfile.TemporaryDirectory() as tmp:
-            first = omaha.run_simulation(self.cfg, self.grid, self.baseline, Path(tmp) / "first")
-            second = omaha.run_simulation(
+            first = simulation.run_simulation(
+                self.cfg, self.grid, self.baseline, Path(tmp) / "first"
+            )
+            second = simulation.run_simulation(
                 self.cfg, self.grid, synthetic_baseline(self.grid), Path(tmp) / "second"
             )
-            loaded = omaha.load_simulation(Path(tmp) / "first", self.cfg, self.grid)
+            loaded = simulation.load_simulation(Path(tmp) / "first", self.cfg, self.grid)
             self.assertGreater(len(first["versions"]), 0)
             self.assertEqual(first["summary"], second["summary"])
             self.assertEqual(first["summary"], loaded["summary"])
@@ -266,7 +277,7 @@ class EngineTests(unittest.TestCase):
     def test_zero_growth_builds_nothing(self):
         self.cfg.update(annual_household_growth_rate=0.0, annual_job_growth_rate=0.0)
         with tempfile.TemporaryDirectory() as tmp:
-            result = omaha.run_simulation(self.cfg, self.grid, self.baseline, tmp)
+            result = simulation.run_simulation(self.cfg, self.grid, self.baseline, tmp)
         self.assertEqual(result["versions"], [])
         for state in result["states"]:
             np.testing.assert_array_equal(state["urban"], self.baseline["urban"])
@@ -280,7 +291,7 @@ class EngineTests(unittest.TestCase):
             annual_job_growth_rate=0.01,
         )
         with tempfile.TemporaryDirectory() as tmp:
-            result = omaha.run_simulation(self.cfg, self.grid, self.baseline, tmp)
+            result = simulation.run_simulation(self.cfg, self.grid, self.baseline, tmp)
         self.assertEqual(result["versions"], [])
         self.assertGreater(result["summary"][-1]["cumulative_housing_demand_served"], 0.0)
         self.assertEqual(result["summary"][-1]["unmet_housing_demand"], 0.0)
@@ -290,7 +301,7 @@ class EngineTests(unittest.TestCase):
         b["urban"][:] = False
         b["urban"][3, 3] = True
         b["arch"][:] = 0
-        b["arch"][3, 3] = omaha.SUBURBAN
+        b["arch"][3, 3] = simulation.SUBURBAN
         b["centrality"][:] = 0.2
         bounds = g.cell_bounds(3, 3)
         b["buildings"] = [
@@ -298,7 +309,7 @@ class EngineTests(unittest.TestCase):
                 "id": "way/real",
                 "polygons": [{"outer": rectangle(*bounds), "holes": []}],
                 "height_m": 6.0,
-                "arch": omaha.SUBURBAN,
+                "arch": simulation.SUBURBAN,
             }
         ]
         b["spatial_index"] = workers.prepare_spatial_index(b, g)
@@ -310,7 +321,7 @@ class EngineTests(unittest.TestCase):
             annual_job_growth_rate=0.0,
         )
         with tempfile.TemporaryDirectory() as tmp:
-            result = omaha.run_simulation(self.cfg, g, b, tmp)
+            result = simulation.run_simulation(self.cfg, g, b, tmp)
         self.assertGreater(result["summary"][-1]["new_greenfield_cells"], 0)
         for site in result["states"][-1]["sites"]:
             self.assertEqual(site["lifecycle_type"], "greenfield")
@@ -325,16 +336,16 @@ class EngineTests(unittest.TestCase):
     def test_excluded_land_carries_unmet_demand_without_building(self):
         self.baseline["water_fraction"][:] = 1.0
         with tempfile.TemporaryDirectory() as tmp:
-            result = omaha.run_simulation(self.cfg, self.grid, self.baseline, tmp)
+            result = simulation.run_simulation(self.cfg, self.grid, self.baseline, tmp)
         self.assertEqual(result["versions"], [])
         self.assertGreater(result["summary"][-1]["unmet_housing_demand"], 0.0)
         self.assertGreater(result["summary"][-1]["unmet_job_demand"], 0.0)
 
     def test_redevelopment_retires_only_generated_buildings(self):
-        grid = omaha.Grid((41.20, -96.05, 41.203, -96.047), 0.35)
+        grid = simulation.Grid((41.20, -96.05, 41.203, -96.047), 0.35)
         b = synthetic_baseline(grid)
         b["urban"][:] = True
-        b["arch"][:] = omaha.SUBURBAN
+        b["arch"][:] = simulation.SUBURBAN
         b["centrality"][:] = 0.2
         cfg = dict(
             self.cfg,
@@ -347,7 +358,7 @@ class EngineTests(unittest.TestCase):
             min_redevelopment_age=1,
         )
         with tempfile.TemporaryDirectory() as tmp:
-            result = omaha.run_simulation(cfg, grid, b, tmp)
+            result = simulation.run_simulation(cfg, grid, b, tmp)
         self.assertTrue(any(row["redevelopment_sites"] for row in result["summary"]))
         for state in result["states"]:
             active = [
@@ -364,10 +375,10 @@ class EngineTests(unittest.TestCase):
     def test_highrise_requires_signal_and_density_thresholds(self):
         self.baseline["centrality"][:] = 0.2
         neighbors = np.ones(self.grid.shape, dtype=np.float32)
-        self.assertFalse(omaha.highrise_allowed(self.cfg, self.baseline, 3, 3, neighbors))
+        self.assertFalse(simulation.highrise_allowed(self.cfg, self.baseline, 3, 3, neighbors))
         self.assertNotEqual(
-            omaha.choose_archetype(self.cfg, self.baseline, 3, 3, neighbors, 500.0, 500.0),
-            omaha.HIGHRISE,
+            simulation.choose_archetype(self.cfg, self.baseline, 3, 3, neighbors, 500.0, 500.0),
+            simulation.HIGHRISE,
         )
 
 
@@ -596,21 +607,21 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg.update(output_dir=tmp, cache_dir=tmp)
             with patch.object(
-                omaha, "build_baseline", side_effect=lambda c, g: synthetic_baseline(g)
+                simulation, "build_baseline", side_effect=lambda c, g: synthetic_baseline(g)
             ):
-                _, baseline, first = omaha.prepare_simulation(cfg)
+                _, baseline, first = simulation.prepare_simulation(cfg)
             cfg["run_mode"] = "REPLAY"
             with patch.object(
-                omaha, "build_baseline", side_effect=AssertionError("Replay downloaded data")
+                simulation, "build_baseline", side_effect=AssertionError("Replay downloaded data")
             ):
-                _, restored, loaded = omaha.prepare_simulation(cfg)
+                _, restored, loaded = simulation.prepare_simulation(cfg)
             self.assertEqual(first["summary"], loaded["summary"])
             np.testing.assert_array_equal(baseline["urban"], restored["urban"])
             self.assertTrue(loaded["metadata"]["complete"])
             path = Path(first["run_directory"]) / "simulation" / "2027.npz"
             path.write_bytes(b"corrupt")
             with self.assertRaisesRegex(ValueError, "missing or changed"):
-                omaha.prepare_simulation(cfg)
+                simulation.prepare_simulation(cfg)
 
 
 if __name__ == "__main__":
