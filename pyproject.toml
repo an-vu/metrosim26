@@ -6,10 +6,7 @@ target-version = "py311"
 select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.ruff.lint.isort]
-known-first-party = [
-    "omaha_blender", "omaha_config", "omaha_data", "omaha_simulation",
-    "omaha_workers", "prefetch_omaha_data",
-]
+known-first-party = ["metrosim26", "scripts"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -17,7 +14,7 @@ indent-style = "space"
 line-ending = "lf"
 
 [tool.pyright]
-include = ["*.py", "tests"]
+include = ["*.py", "metrosim26", "scripts", "tests"]
 exclude = ["**/__pycache__", ".venv", "venv"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"

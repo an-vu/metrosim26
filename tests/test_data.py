@@ -22,9 +22,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from test_simulation import config, data, synthetic_baseline
-from test_simulation import omaha as simulation
+from test_simulation import simulation as simulation
 
-import prefetch_omaha_data as prefetch
+from scripts import prefetch_data as prefetch
 
 
 class Response(io.BytesIO):
@@ -127,7 +127,7 @@ class AcquisitionTests(unittest.TestCase):
         message = str(error.exception)
         for spec in specs:
             self.assertIn(spec.label, message)
-        self.assertIn("prefetch_omaha_data.py --preview", message)
+        self.assertIn("scripts/prefetch_data.py --preview", message)
 
     def test_full_cache_succeeds_offline_and_loaders_share_inventory(self):
         self.cfg = config.make_config(preview=False)
@@ -356,7 +356,7 @@ class EntryAndReplayTests(unittest.TestCase):
         script = """import importlib.abc, runpy, sys
 class NoBlender(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in ('bpy', 'mathutils', 'omaha_blender'):
+        if fullname in ('bpy', 'mathutils', 'metrosim26.blender_ui'):
             raise AssertionError('Blender dependency: ' + fullname)
 sys.meta_path.insert(0, NoBlender())
 sys.argv = [sys.argv[1], '--help']
@@ -364,7 +364,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
 """
         with tempfile.TemporaryDirectory() as tmp:
             result = subprocess.run(
-                [sys.executable, "-c", script, str(root / "prefetch_omaha_data.py")],
+                [sys.executable, "-c", script, str(root / "scripts/prefetch_data.py")],
                 cwd=tmp,
                 capture_output=True,
                 text=True,
@@ -381,16 +381,22 @@ runpy.run_path(sys.argv[0], run_name='__main__')
         spec.loader.exec_module(entry)
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
+            package = folder / "metrosim26"
+            package.mkdir()
             for name in (
-                "omaha_config.py",
-                "omaha_data.py",
-                "omaha_simulation.py",
-                "omaha_workers.py",
-                "omaha_blender.py",
-                "omaha_runtime.py",
-                "omaha_scene.py",
+                "__init__.py",
+                "config.py",
+                "data.py",
+                "simulation.py",
+                "workers.py",
+                "blender_ui.py",
+                "runtime.py",
+                "scene.py",
+                "history.py",
+                "projects.py",
+                "infrastructure.py",
             ):
-                (folder / name).touch()
+                (package / name).touch()
             text = SimpleNamespace(filepath="//blender.py")
             bpy = SimpleNamespace(
                 context=SimpleNamespace(space_data=SimpleNamespace(text=text)),

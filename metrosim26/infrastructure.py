@@ -8,8 +8,8 @@ from copy import deepcopy
 
 import numpy as np
 
-from omaha_projects import add_event, fictional_name
-from omaha_workers import (
+from metrosim26.projects import add_event, fictional_name
+from metrosim26.workers import (
     _bbox,
     _bucket_cells,
     _ring_hits_polygon,

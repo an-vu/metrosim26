@@ -1,10 +1,49 @@
-# Urban Generator - Omaha
+# MetroSim 26
 
-A Blender 5.2.2 city-growth scenario using OpenStreetMap geometry and Census LODES data. A standalone Python process prepares local data and simulates growth; Blender monitors progress and imports the scene incrementally.
+MetroSim 26 is a Blender 5.2.2 city-growth scenario using OpenStreetMap geometry and Census LODES data. A standalone Python process prepares local data and simulates growth; Blender monitors progress and imports the scene incrementally.
+
+The repository is [an-vu/metrosim26](https://github.com/an-vu/metrosim26).
+
+## Repository layout
+
+```text
+metrosim26/
+├── blender.py              # Open and run in Blender
+├── live_logger.py          # Optional Blender console logger
+├── metrosim26/             # Engine and Blender integration package
+│   ├── __init__.py
+│   ├── config.py           # Scenario settings
+│   ├── data.py
+│   ├── simulation.py
+│   ├── workers.py
+│   ├── runtime.py
+│   ├── scene.py
+│   ├── blender_ui.py
+│   ├── history.py
+│   ├── projects.py
+│   └── infrastructure.py
+├── scripts/prefetch_data.py # Standalone input downloader
+├── tests/                  # Offline tests and fixtures
+├── docs/                   # Feature documentation
+├── pyproject.toml
+├── metrosim26.code-workspace
+└── README.md
+```
+
+Copy the whole repository folder between computers. The saved root `blender.py`
+locates its adjacent package; the downloader also finds the repository from its own
+saved path. No installation or hard-coded project path is required. Open the file
+from disk in Blender rather than pasting it into an unnamed text block.
+
+Relative historical evidence paths are resolved from the repository root.
+Downloaded datasets, simulation results, `.blend` files, and renders belong in the
+configured external cache/output folders, not in the source package. Moving the
+Python modules into this package does not change scenario identity or generated
+checkpoints.
 
 ## Setup
 
-Keep all Python files together. Edit **`omaha_config.py`** for settings.
+Keep the repository layout intact. Open the root `blender.py` in Blender; it finds the `metrosim26/` package automatically. Edit **`metrosim26/config.py`** for settings.
 
 Defaults: full Omaha/Council Bluffs area, 2026–2076, 16 simulation workers, and offline data loading in Blender.
 
@@ -14,38 +53,49 @@ Open **PowerShell** and run:
 
 ```powershell
 & "C:\Program Files (x86)\Steam\steamapps\common\Blender\5.2\python\bin\python.exe" `
-    "C:\Users\anvu1\Desktop\Blender Generator\prefetch_omaha_data.py" `
+    "C:\Users\anvu1\Desktop\metrosim26\scripts\prefetch_data.py" `
     --full
 ```
 
 Adjust the folder paths if needed. Alternatively, with ordinary Python and NumPy installed:
 
 ```powershell
-python .\prefetch_omaha_data.py --full
+python .\scripts\prefetch_data.py --full
 ```
 
 Wait for **`CACHE READY FOR BLENDER`**. The downloader rotates through the main,
 Private Coffee, and Kumi Overpass endpoints automatically. If interrupted or a download
 fails, rerun the same command; completed files are reused. The cache is stored in
-`Documents\Blender_Omaha_V3_Cache`.
+`Documents\Blender_MetroSim26_V3_Cache`.
 
 ## 2. Run inside Blender
 
 1. Run your existing **`live_logger.py`**.
 2. Open the saved **`blender.py`** in Blender’s Text Editor and run it. The other modules import automatically.
-3. Open the 3D Viewport sidebar (**N → Omaha**) to see phase, year, workers, elapsed time, and **Cancel Simulation**. Blender returns control immediately while calculation runs externally.
+3. Open the 3D Viewport sidebar (**N → MetroSim26**) to see phase, year, workers, elapsed time, and **Cancel Simulation**. Blender returns control immediately while calculation runs externally.
 4. Wait for **Ready**, then scrub the timeline: frame **1 = 2026**, frame **25 = 2050**, frame **51 = 2076**.
 
-Results are saved in `Documents\Blender_Omaha_V3_Output`. Blender reports missing data instead of downloading it.
+Results are saved in `Documents\Blender_MetroSim26_V3_Output`. Blender reports missing data instead of downloading it.
 
 The launcher finds Blender's standalone Python automatically. If needed, set
-`WORKER_PYTHON` in `omaha_config.py` to a standalone Python with matching NumPy.
-Keep `omaha_runtime.py` and `omaha_scene.py` alongside the other modules; neither
-needs to be run manually.
+`WORKER_PYTHON` in `metrosim26/config.py` to a standalone Python with matching NumPy.
+The external runtime and scene modules remain inside `metrosim26/`; neither needs to be run manually.
+
+### Renaming from Urban Generator
+
+Source modules now live in the `metrosim26/` package with short filenames, and the downloader is
+`scripts/prefetch_data.py`. Reopen `metrosim26.code-workspace` from the renamed
+local folder. Blender's sidebar tab is **MetroSim26**.
+
+New caches and results use `Documents/Blender_MetroSim26_V3_Cache` and
+`Documents/Blender_MetroSim26_V3_Output`. The cache-query and model identifiers also use
+MetroSim26, so prefetch again and run `SIMULATE` to create a matching run.
+Older cache and output folders are retained; their runs do not automatically
+match the new identity for AUTO/REPLAY.
 
 ## Useful settings
 
-In `omaha_config.py`:
+In `metrosim26/config.py`:
 
 - **Preview:** set `PREVIEW_MODE = True`, then prefetch with `--preview` instead of `--full`. Preview ends in 2035.
 - **Recalculate:** `RUN_MODE = "SIMULATE"`.
@@ -76,13 +126,13 @@ Continuation contracts are available, but `EXTEND` execution is not implemented 
 
 ## FAQ
 
-### What data and logic does the Omaha simulation use to decide where and what to generate?
+### What data and logic does MetroSim26 use to decide where and what to generate?
 
 The simulator does **not simply place random buildings around the map**. It builds a
 baseline from real geography and employment data, estimates future demand, ranks
 eligible locations, and generates buildings that satisfy capacity and placement rules.
 
-**Real-world inputs.** [omaha_data.py](omaha_data.py) loads OpenStreetMap buildings,
+**Real-world inputs.** [metrosim26/data.py](metrosim26/data.py) loads OpenStreetMap buildings,
 roads, land use, water, parks/protected areas, amenities, and points of interest such
 as shops, offices, schools, and hospitals. It reconstructs geometry from nodes,
 ways, and relations, including multipolygons and their holes. Existing OSM building
@@ -113,7 +163,7 @@ and baseline archetype classifications are model choices. Most baseline signals
 remain fixed during a run; the developed-cell map, neighbors, generated sites,
 and demand/capacity accounting evolve annually.
 
-**Demand and development rules.** [omaha_config.py](omaha_config.py) defaults to
+**Demand and development rules.** [metrosim26/config.py](metrosim26/config.py) defaults to
 annual household growth of **0.8%**, job growth of **1.0%**, and initial housing/job
 vacancy of **4%** each. Initial households are estimated from OSM residential floor
 space unless explicitly configured. Initial jobs use the WAC total unless configured;
@@ -122,7 +172,7 @@ fallback. Floor area per home/job, usable floor space, vacancy, and growth are s
 assumptions. Existing spare capacity serves demand first, and unmet demand carries
 forward rather than disappearing.
 
-[omaha_simulation.py](omaha_simulation.py) then processes development in this order:
+[metrosim26/simulation.py](metrosim26/simulation.py) then processes development in this order:
 
 1. **Infill:** add buildings on unused parts of generated sites or in eligible existing
    developed cells, preserving real OSM buildings. Existing generated sites get priority.
@@ -146,7 +196,7 @@ job concentration, developed-neighbor thresholds, and substantial remaining dema
 both homes and jobs. Redevelopment uses its own allowed transitions, including the
 location eligibility checks for high-rises.
 
-**Procedural variation.** [omaha_workers.py](omaha_workers.py) derives a reproducible
+**Procedural variation.** [metrosim26/workers.py](metrosim26/workers.py) derives a reproducible
 random stream from `SEED`, cell coordinates, archetype, and redevelopment/layout epoch.
 Current random draws vary floor counts for some archetypes; a seeded stable ordering
 determines which valid candidate lots are filled first. Roads, parcels, setbacks,
@@ -161,11 +211,11 @@ actual future**. It does not model actual future zoning decisions, ownership, la
 prices, utility capacity, terrain, or infrastructure budgets. Generated parcels and
 streets are procedural approximations, not cadastral or transportation forecasts.
 
-### Why can Blender appear frozen while the Omaha simulation is running, and how can I tell whether it is still working?
+### Why can Blender appear frozen while MetroSim26 is running, and how can I tell whether it is still working?
 
 Earlier versions ran long calculation stages on Blender's main Python thread,
 preventing the interface from repainting even while the log advanced. The current
-`blender.py` launches [omaha_runtime.py](omaha_runtime.py) as a standalone process
+`blender.py` launches [metrosim26/runtime.py](metrosim26/runtime.py) as a standalone process
 and polls atomic progress files with `bpy.app.timers`. Heavy calculation and waiting
 for the planning broker now happen outside Blender. No calculation process imports
 `bpy`, and no background thread mutates Blender data.
@@ -174,11 +224,11 @@ A fresh simulation goes through local cache validation, loading/merging OSM tile
 parsing OSM geometry and relations, streaming LODES gzip/CSV files, deriving baseline
 signals and raster masks, building the spatial index, simulation planning/serial
 commits. These all run externally, followed by geometry preparation in
-[omaha_scene.py](omaha_scene.py). Blender then imports one mesh chunk per timer tick,
+[metrosim26/scene.py](metrosim26/scene.py). Blender then imports one mesh chunk per timer tick,
 with at most 12,000 vertices per chunk, including splitting unusually large polygons
 without changing their faces. Completed replay also loads saved data externally.
 
-The **Omaha** panel reports these phases and yearly/mesh progress. Individual Blender
+The **MetroSim26** panel reports these phases and yearly/mesh progress. Individual Blender
 mesh updates, device initialization, and final scene activation are still native,
 indivisible operations and can briefly pause the UI; timers cannot preempt them.
 Optional automatic `.blend` saving and rendering remain synchronous and may block;
@@ -252,7 +302,7 @@ not to maximize Task Manager percentages.
   deliberately filling RAM. Low memory use does not indicate a failure.
 - **Network:** this project's network activity should be zero during Blender execution.
   `blender.py` forces offline data loading; input acquisition happens separately in
-  `prefetch_omaha_data.py`. Other applications or Blender add-ons may have their own traffic.
+  `scripts/prefetch_data.py`. Other applications or Blender add-ons may have their own traffic.
 
 The observed preview simulation benchmark on the tested workstation was:
 

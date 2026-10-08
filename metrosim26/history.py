@@ -12,15 +12,15 @@ from typing import Any
 
 import numpy as np
 
-from omaha_config import (
+from metrosim26.config import (
     EVOLUTION_SCHEMA_VERSION,
     evolution_enabled,
     simulation_config,
     timeline_start,
 )
-from omaha_data import atomic_json, atomic_npz
-from omaha_runtime import report_progress
-from omaha_workers import _bbox, _bucket_cells, _ring_hits_polygon
+from metrosim26.data import atomic_json, atomic_npz
+from metrosim26.runtime import report_progress
+from metrosim26.workers import _bbox, _bucket_cells, _ring_hits_polygon
 
 
 def year_to_frame(year, cfg):

@@ -8,9 +8,9 @@ from pathlib import Path
 
 import numpy as np
 
-from omaha_config import timeline_start
-from omaha_runtime import report_progress, write_json
-from omaha_workers import mesh_triangles
+from metrosim26.config import timeline_start
+from metrosim26.runtime import report_progress, write_json
+from metrosim26.workers import mesh_triangles
 
 
 class PacketBatch:
@@ -282,7 +282,7 @@ def export_scene(cfg, grid, baseline, result, directory):
         "infrastructure": (0.16, 0.31, 0.40),
     }
     materials = {
-        key: material("Omaha_" + key, color, 0.28 if key == "water" else 0.8)
+        key: material("MetroSim26_" + key, color, 0.28 if key == "water" else 0.8)
         for key, color in colors.items()
     }
     # Muted warm construction cohorts; visual choices, not observed colors.

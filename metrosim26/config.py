@@ -57,12 +57,12 @@ LODES_YEAR = 2023
 LODES_VERSION = "LODES8"
 # Change vintage to deliberately obtain a revised release of the same year.
 LODES_VINTAGE = "cached-release"
-OSM_QUERY_VERSION = "omaha-v3-relations-1"
+OSM_QUERY_VERSION = "metrosim26-v3-relations-1"
 OSM_DATA_SNAPSHOT = None  # Optional Overpass historical ISO UTC date string.
-MODEL_VERSION = "omaha-demand-sites-3.0"
+MODEL_VERSION = "metrosim26-demand-sites-3.0"
 STATE_SCHEMA_VERSION = 3
-CACHE_ROOT = Path.home() / "Documents" / "Blender_Omaha_V3_Cache"
-OUTPUT_ROOT = Path.home() / "Documents" / "Blender_Omaha_V3_Output"
+CACHE_ROOT = Path.home() / "Documents" / "Blender_MetroSim26_V3_Cache"
+OUTPUT_ROOT = Path.home() / "Documents" / "Blender_MetroSim26_V3_Output"
 
 # Visualization settings never affect generated simulation states.
 VERTICAL_EXAGGERATION = 1.25
@@ -114,7 +114,7 @@ def make_config(preview=None):
         "timeline_start_year": TIMELINE_START_YEAR,
         "historical_evidence_file": str(
             (
-                Path(__file__).resolve().parent / Path(HISTORICAL_EVIDENCE_FILE).expanduser()
+                Path(__file__).resolve().parents[1] / Path(HISTORICAL_EVIDENCE_FILE).expanduser()
             ).resolve()
         )
         if HISTORICAL_EVIDENCE_FILE

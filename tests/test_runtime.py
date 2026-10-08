@@ -15,10 +15,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 from test_data import populate
 from test_performance import performance_case
-from test_simulation import config, data, omaha, rectangle, synthetic_baseline, visual
+from test_simulation import config, data, rectangle, simulation, synthetic_baseline, visual
 
-import omaha_runtime as runtime
-import omaha_scene as geometry
+import metrosim26.runtime as runtime
+import metrosim26.scene as geometry
 
 
 def small_config(directory):
@@ -69,8 +69,8 @@ class RuntimeTests(unittest.TestCase):
                 run_mode="SIMULATE",
             )
             direct = Path(tmp) / "direct"
-            with patch.object(omaha, "build_baseline", return_value=baseline):
-                omaha.prepare_simulation(cfg, destination=direct)
+            with patch.object(simulation, "build_baseline", return_value=baseline):
+                simulation.prepare_simulation(cfg, destination=direct)
             cfg["enable_parallel_compute"] = True
             job = Path(tmp) / "job"
             job.mkdir()
@@ -81,16 +81,16 @@ class RuntimeTests(unittest.TestCase):
 import sys
 sys.path.insert(0, sys.argv[1])
 from test_performance import performance_case
-import omaha_simulation, omaha_runtime
+from metrosim26 import simulation, runtime
 _, _, baseline = performance_case()
 baseline['urban'][:] = True
-omaha_simulation.os.cpu_count = lambda: 20
-omaha_simulation.build_baseline = lambda cfg, grid: baseline
-raise SystemExit(omaha_runtime.run_job(sys.argv[2]))
+simulation.os.cpu_count = lambda: 20
+simulation.build_baseline = lambda cfg, grid: baseline
+raise SystemExit(runtime.run_job(sys.argv[2]))
 """
             process = subprocess.run(
                 [sys.executable, "-c", script, str(Path(__file__).parent), str(job)],
-                cwd=Path(runtime.__file__).parent,
+                cwd=Path(runtime.__file__).resolve().parents[1],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -117,7 +117,7 @@ raise SystemExit(omaha_runtime.run_job(sys.argv[2]))
             populate(cfg)
             direct = Path(tmp) / "direct"
             with patch.object(data.urllib.request, "urlopen", side_effect=AssertionError("HTTP")):
-                omaha.prepare_simulation(cfg, destination=direct)
+                simulation.prepare_simulation(cfg, destination=direct)
             job = runtime.CalculationJob(cfg, sys.executable)
             self.assertEqual(
                 wait_job(job)["phase"],
@@ -147,7 +147,7 @@ raise SystemExit(omaha_runtime.run_job(sys.argv[2]))
             self.assertIn("input cache is incomplete", failed.status["error"])
             self.assertFalse(failed.status["complete"])
             self.assertEqual(pointer.read_bytes(), before)
-            self.assertIsNotNone(omaha.validate_saved_run(output, cfg))
+            self.assertIsNotNone(simulation.validate_saved_run(output, cfg))
 
     def test_progress_phases_and_headless_import_boundary(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
@@ -184,9 +184,9 @@ raise SystemExit(omaha_runtime.run_job(sys.argv[2]))
                 [
                     sys.executable,
                     "-c",
-                    "import sys; import omaha_runtime, omaha_scene, omaha_simulation; assert not {'bpy', 'mathutils', 'omaha_blender'} & sys.modules.keys()",
+                    "import sys; import metrosim26.runtime, metrosim26.scene, metrosim26.simulation; assert not {'bpy', 'mathutils', 'metrosim26.blender_ui'} & sys.modules.keys()",
                 ],
-                cwd=Path(runtime.__file__).parent,
+                cwd=Path(runtime.__file__).resolve().parents[1],
                 capture_output=True,
                 text=True,
             )
@@ -325,7 +325,7 @@ class SceneHandoffTests(unittest.TestCase):
     def test_export_and_incremental_import_preserve_faces_materials_and_lifetimes(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = small_config(tmp)
-            grid = omaha.Grid(tuple(cfg["bounds"]), cfg["cell_km"])
+            grid = simulation.Grid(tuple(cfg["bounds"]), cfg["cell_km"])
             baseline = synthetic_baseline(grid)
             polygon = {"outer": rectangle(0, 0, 0.1, 0.1), "holes": []}
             baseline["buildings"] = [{"id": "a", "polygons": [polygon], "height_m": 6}]

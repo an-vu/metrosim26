@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 # Standalone Python resolves this saved entry script, independent of the CWD.
-PROJECT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
@@ -13,8 +13,8 @@ if str(PROJECT_DIR) not in sys.path:
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    from omaha_config import make_config, validate_config
-    from omaha_data import prefetch_data
+    from metrosim26.config import make_config, validate_config
+    from metrosim26.data import prefetch_data
 
     parser = argparse.ArgumentParser(description=__doc__)
     area = parser.add_mutually_exclusive_group()

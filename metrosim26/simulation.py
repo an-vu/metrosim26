@@ -17,8 +17,8 @@ from pathlib import Path
 
 import numpy as np
 
-import omaha_workers
-from omaha_config import (
+from metrosim26 import workers
+from metrosim26.config import (
     COMMERCIAL,
     EMPTY,
     ENGINE_SCHEMA_VERSION,
@@ -37,24 +37,24 @@ from omaha_config import (
     simulation_config,
     validate_config,
 )
-from omaha_data import (
+from metrosim26.data import (
     atomic_json,
     atomic_npz,
     build_baseline,
     load_baseline,
     save_baseline,
 )
-from omaha_history import (
+from metrosim26.history import (
     build_history,
     extra_output_names,
     load_evidence,
     load_history,
     save_continuation,
 )
-from omaha_infrastructure import Infrastructure
-from omaha_projects import Projects
-from omaha_runtime import report_progress
-from omaha_workers import (
+from metrosim26.infrastructure import Infrastructure
+from metrosim26.projects import Projects
+from metrosim26.runtime import report_progress
+from metrosim26.workers import (
     Grid,
     make_site_plan,
     polygon_area,
@@ -448,7 +448,7 @@ class _PlanningCache(dict):
         self.recent_costs = []
         self.seconds = {"planning": 0.0, "ranking": 0.0, "grid": 0.0, "checkpoint": 0.0}
         if self.profile:
-            print("\n================================================\nOMAHA PERFORMANCE")
+            print("\n================================================\nMETROSIM26 PERFORMANCE")
             print(f"Logical CPUs detected: {os.cpu_count()}")
             print(f"Parallel compute: {'ON (lazy startup)' if self.enabled else 'OFF — serial'}")
             print(f"Worker processes: {self.workers if self.enabled else 0}")
@@ -496,9 +496,9 @@ class _PlanningCache(dict):
         return reply
 
     def _start(self, tasks):
-        self.directory = tempfile.TemporaryDirectory(prefix="omaha_workers_")
+        self.directory = tempfile.TemporaryDirectory(prefix="metrosim26_workers_")
         executable = _worker_python(self.cfg)
-        omaha_workers.write_worker_state(self.directory.name, self.cfg, self.grid, self.baseline)
+        workers.write_worker_state(self.directory.name, self.cfg, self.grid, self.baseline)
         self.error_file = open(Path(self.directory.name) / "stderr.log", "w+", encoding="utf8")
         env = dict(os.environ)
         for name in (
@@ -511,11 +511,13 @@ class _PlanningCache(dict):
         self.process = subprocess.Popen(
             [
                 executable,
-                str(Path(omaha_workers.__file__).resolve()),
+                "-m",
+                "metrosim26.workers",
                 "--broker",
                 self.directory.name,
                 str(min(self.workers, len(tasks))),
             ],
+            cwd=Path(__file__).resolve().parents[1],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self.error_file,
@@ -613,7 +615,7 @@ class _PlanningCache(dict):
                     detail = self.error_file.read()[-1500:]
                 self._close()
                 self.enabled = False
-                print(f"[Omaha] Multiprocessing unavailable; SERIAL FALLBACK: {exc}\n{detail}")
+                print(f"[MetroSim26] Multiprocessing unavailable; SERIAL FALLBACK: {exc}\n{detail}")
                 self.seconds["planning"] += time.perf_counter() - started
                 return
         assert self.process is not None and self.process.stdin is not None
@@ -674,7 +676,7 @@ def run_simulation(cfg, grid, baseline, sim_dir):
             profile_performance=False,
             validate_parallel_results=False,
         )
-        with tempfile.TemporaryDirectory(prefix="omaha_validation_") as tmp:
+        with tempfile.TemporaryDirectory(prefix="metrosim26_validation_") as tmp:
             saved_baseline = Path(sim_dir) / "baseline.npz"
             if (
                 evolution_enabled(cfg) or cfg.get("save_continuation")
@@ -684,9 +686,9 @@ def run_simulation(cfg, grid, baseline, sim_dir):
             for path in sorted(Path(tmp).iterdir()):
                 if path.read_bytes() != (Path(sim_dir) / path.name).read_bytes():
                     raise AssertionError("Serial/parallel checkpoint mismatch: " + path.name)
-        print("[Omaha] Serial/parallel validation: all authoritative files byte-identical.")
+        print("[MetroSim26] Serial/parallel validation: all authoritative files byte-identical.")
     elif cfg.get("validate_parallel_results", False):
-        print("[Omaha] Validation skipped: no parallel plans were needed in this run.")
+        print("[MetroSim26] Validation skipped: no parallel plans were needed in this run.")
     return result
 
 
@@ -1319,7 +1321,7 @@ def prepare_simulation(cfg, *, destination=None):
         report_progress("loading_saved", "Validating and locating saved results")
         directory = _saved_run_directory(cfg, directory)
     sim_dir = directory / "simulation"
-    print(f"Omaha scenario | seed {cfg['seed']} | {cfg['base_year']}–{cfg['end_year']}")
+    print(f"MetroSim26 scenario | seed {cfg['seed']} | {cfg['base_year']}–{cfg['end_year']}")
     print(f"Study area {grid.width:.2f} × {grid.height:.2f} km; grid {grid.nx} × {grid.ny}")
     print(f"Output: {directory}")
 

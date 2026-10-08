@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Pure Omaha geometry and process workers. Never imports Blender.
+"""Pure MetroSim26 geometry and process workers. Never imports Blender.
 
-Keep this file beside blender.py. Worker startup uses an external Python broker
+Keep this module inside the metrosim26 package. Worker startup uses an external Python broker
 and an explicit spawn context, including on non-Windows test machines.
 """
 

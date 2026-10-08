@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Blender entry point. Open this saved file in the Text Editor and run it.
 
-Edit omaha_config.py for scenario settings. Run prefetch_omaha_data.py outside
+Edit metrosim26/config.py for scenario settings. Run scripts/prefetch_data.py outside
 Blender first; this entry point always uses local data only.
 """
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def project_directory() -> Path:
-    """Locate saved sibling modules, including Blender Text Editor execution."""
+    """Locate the repository beside the saved launcher, including Text Editor execution."""
     candidates = []
     bpy = sys.modules.get("bpy")
     if bpy is not None:
@@ -23,19 +23,23 @@ def project_directory() -> Path:
             script = bpy.path.abspath(script)
         candidates.append(Path(script).resolve().parent)
     required = (
-        "omaha_config.py",
-        "omaha_data.py",
-        "omaha_simulation.py",
-        "omaha_workers.py",
-        "omaha_blender.py",
-        "omaha_runtime.py",
-        "omaha_scene.py",
+        "__init__.py",
+        "config.py",
+        "data.py",
+        "simulation.py",
+        "workers.py",
+        "blender_ui.py",
+        "runtime.py",
+        "scene.py",
+        "history.py",
+        "projects.py",
+        "infrastructure.py",
     )
     for directory in candidates:
-        if all((directory / name).is_file() for name in required):
+        if all((directory / "metrosim26" / name).is_file() for name in required):
             return directory.resolve()
     raise RuntimeError(
-        "Cannot locate Omaha modules. Keep all project files together "
+        "Cannot locate MetroSim26 modules. Keep blender.py beside the metrosim26 package folder "
         "and open the saved blender.py in Blender’s Text Editor; "
         "an unsaved pasted text block has no reliable project directory."
     )
@@ -53,12 +57,12 @@ def main() -> None:
     # Reload settings so edits on disk take effect when rerunning in the Text Editor.
     import importlib
 
-    import omaha_config
+    from metrosim26 import config
 
-    importlib.reload(omaha_config)
-    from omaha_blender import start_blender_job
+    importlib.reload(config)
+    from metrosim26.blender_ui import start_blender_job
 
-    cfg = omaha_config.make_config()
+    cfg = config.make_config()
     cfg["data_mode"] = "OFFLINE"
     start_blender_job(cfg)
 
