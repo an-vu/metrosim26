@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +43,7 @@ from metrosim26.data import (
     atomic_npz,
     build_baseline,
     load_baseline,
+    replace_checkpoint,
     save_baseline,
 )
 from metrosim26.history import (
@@ -443,6 +445,7 @@ class _PlanningCache(dict):
         self.directory = None
         self.error_file = None
         self.started = time.perf_counter()
+        self.years_run = 0
         self.batch_size = max(1, int(cfg.get("parallel_batch_size", 32)))
         self.counts = {"cache_hits": 0, "serial_plans": 0, "parallel_plans": 0, "batches": 0}
         self.recent_costs = []
@@ -569,7 +572,7 @@ class _PlanningCache(dict):
                     "Pool not started: available batches were too small/cheap to justify startup."
                 )
             elapsed = time.perf_counter() - self.started
-            years = self.cfg["end_year"] - self.cfg["base_year"] + 1
+            years = max(1, self.years_run)
             print(f"Simulation total (including worker startup/shutdown): {elapsed:.3f} s")
             print(f"Average/saved year: {elapsed / years:.3f} s | {self.counts}")
 
@@ -646,6 +649,7 @@ class _PlanningCache(dict):
         return result
 
     def year_start(self):
+        self.years_run += 1
         self.year_started = time.perf_counter()
         self.seconds = dict.fromkeys(self.seconds, 0.0)
 
@@ -661,9 +665,9 @@ class _PlanningCache(dict):
             )
 
 
-def run_simulation(cfg, grid, baseline, sim_dir):
+def run_simulation(cfg, grid, baseline, sim_dir, *, resume=None):
     with _PlanningCache(cfg, grid, baseline) as cache:
-        result = _run_simulation(cfg, grid, baseline, sim_dir, cache)
+        result = _run_simulation(cfg, grid, baseline, sim_dir, cache, resume=resume)
     report_progress(
         "simulation", "Simulation complete; finalizing results", worker_processes=0, broker_pid=None
     )
@@ -682,7 +686,17 @@ def run_simulation(cfg, grid, baseline, sim_dir):
                 evolution_enabled(cfg) or cfg.get("save_continuation")
             ) and saved_baseline.is_file():
                 shutil.copyfile(saved_baseline, Path(tmp) / "baseline.npz")
-            run_simulation(serial_cfg, grid, baseline, tmp)
+            if resume is not None:
+                events_path = Path(sim_dir) / "events.json"
+                if cfg.get("historical_mode") == "EVIDENCE" and events_path.is_file():
+                    shutil.copyfile(events_path, Path(tmp) / "events.json")
+                for state in resume["result"]["states"]:
+                    if state["year"] >= cfg["base_year"]:
+                        shutil.copyfile(
+                            Path(sim_dir) / f"{state['year']}.npz",
+                            Path(tmp) / f"{state['year']}.npz",
+                        )
+            run_simulation(serial_cfg, grid, baseline, tmp, resume=resume)
             for path in sorted(Path(tmp).iterdir()):
                 if path.read_bytes() != (Path(sim_dir) / path.name).read_bytes():
                     raise AssertionError("Serial/parallel checkpoint mismatch: " + path.name)
@@ -692,7 +706,7 @@ def run_simulation(cfg, grid, baseline, sim_dir):
     return result
 
 
-def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
+def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache, *, resume=None):
     """Compute/save annual states without bpy, timers, threads or wall-clock input."""
     sim_dir = Path(sim_dir)
     sim_dir.mkdir(parents=True, exist_ok=True)
@@ -702,7 +716,11 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
         raise ValueError(
             "This growth-only model requires nonnegative annual scenario growth rates."
         )
-    initial = estimate_baseline_capacity(cfg, grid, baseline)
+    initial = (
+        resume["result"]["baseline_capacity"]
+        if resume is not None
+        else estimate_baseline_capacity(cfg, grid, baseline)
+    )
     baseline.setdefault("metadata", {})["scenario_capacity_baseline"] = initial
     baseline["metadata"]["developed_area_metric"] = (
         "Approximate developed-cell envelope in km2, reduced by water/park fractions; not observed impervious area."
@@ -734,7 +752,37 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
         Infrastructure(cfg, grid, baseline, events) if cfg.get("enable_infrastructure") else None
     )
     continuation_hashes = {}
-    for year in range(cfg["base_year"], cfg["end_year"] + 1):
+    first_year = cfg["base_year"]
+    if resume is not None:
+        restored = deepcopy(resume)
+        previous = restored["result"]
+        states = [s for s in previous["states"] if s["year"] >= cfg["base_year"]]
+        versions, summary = previous["versions"], previous["summary"]
+        final = states[-1]
+        urban, arch = final["urban"].copy(), final["arch"].copy()
+        active = {s["id"]: s for s in final["sites"]}
+        first_year = final["year"] + 1
+        ledger = restored["ledger"]
+        households, jobs = ledger["households"], ledger["jobs"]
+        free_housing, free_jobs = ledger["free_housing"], ledger["free_jobs"]
+        unmet_housing, unmet_jobs = ledger["unmet_housing"], ledger["unmet_jobs"]
+        cumulative_housing_demand = ledger["cumulative_housing_demand"]
+        cumulative_job_demand = ledger["cumulative_job_demand"]
+        cumulative_housing_served = ledger["cumulative_housing_served"]
+        cumulative_jobs_served = ledger["cumulative_jobs_served"]
+        cumulative_housing_added = ledger["cumulative_housing_added"]
+        cumulative_jobs_added = ledger["cumulative_jobs_added"]
+        if evolution_enabled(cfg):
+            events[:] = previous["events"]
+            snapshot = restored["contract"]["projects"]
+            projects.records = {p["project_id"]: p for p in snapshot["projects"]}
+            projects.pending = snapshot["pending_sites"]
+            projects.starts = {int(k): v for k, v in snapshot["starts_by_year"].items()}
+            if infrastructure is not None:
+                snapshot = restored["contract"]["infrastructure"]
+                infrastructure.records = snapshot["infrastructure"]
+                infrastructure.pressure = np.asarray(snapshot["pressure_years"], dtype=np.int32)
+    for year in range(first_year, cfg["end_year"] + 1):
         if evolution_enabled(cfg):
             baseline = (
                 projects.feedback(source_baseline)
@@ -1180,7 +1228,7 @@ def save_summary_csv(path, rows):
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
-    os.replace(temp_path, path)
+    replace_checkpoint(temp_path, path)
 
 
 def load_simulation(sim_dir, cfg, grid):
@@ -1313,6 +1361,10 @@ def _saved_run_directory(cfg, directory):
 def prepare_simulation(cfg, *, destination=None):
     """Pure calculation orchestration; also usable from a standalone NumPy process."""
     validate_config(cfg)
+    if cfg["run_mode"].upper() == "EXTEND":
+        from metrosim26.continuation import extend_simulation
+
+        return extend_simulation(cfg, destination=destination)
     preparation_started = time.perf_counter()
     grid = Grid(tuple(cfg["bounds"]), cfg["cell_km"])
     directory = run_directory(cfg)

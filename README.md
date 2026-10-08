@@ -67,13 +67,54 @@ Edit **[metrosim26/config.py](metrosim26/config.py)**.
 | `RUN_MODE = "SIMULATE"` | Calculate a new run. |
 | `RUN_MODE = "REPLAY"` | Open compatible saved results. |
 | `RUN_MODE = "AUTO"` | Reuse compatible results, or calculate if none exist. |
+| `RUN_MODE = "EXTEND"` | Continue a completed run identified by `EXTEND_FROM`. |
 | `CPU_WORKERS = 16` | Maximum planning workers; the actual count may be lower. |
 | `ENABLE_PROJECTS = True` | Add fictional developments built in phases. |
 | `ENABLE_INFRASTRUCTURE = True` | Add demand-driven access roads. |
 
 - Projects and infrastructure are off by default.
 - Historical evidence and optional features: [feature guide](docs/evolution.md).
-- Extending a saved run with `EXTEND` is not implemented yet.
+- To calculate only additional years, see the extension instructions below.
+
+## Extend a completed run
+
+Keep the original `.blend` and simulation output folder. In `metrosim26/config.py`, set:
+
+```python
+RUN_MODE = "EXTEND"
+EXTEND_FROM = r"C:\path\to\completed_run"  # Or its simulation subfolder
+END_YEAR = 2096
+```
+
+Keep the source run's other scenario settings, including optional feature flags.
+Run the saved root `blender.py` as usual. For a source ending in 2076, calculation
+starts in **2077**, reusing its saved baseline and state without downloading inputs.
+The source is checksum-validated and retained; extended results go into a separate
+run folder. Repeating EXTEND creates another result, never overwrites the source.
+
+Blender imports the full extended timeline into a **new scene**. The original scene
+is preserved. This first implementation does not append meshes to an existing scene
+or transfer your manual scene edits, camera changes, or materials into the new one.
+Scene preparation/import still takes time even though earlier years are not recalculated.
+
+For subsequent playback, keep the original `EXTEND_FROM`, target `END_YEAR`, and
+output directory unchanged and switch to `RUN_MODE = "REPLAY"`.
+To extend again, use the newly completed result folder as `EXTEND_FROM` and increase
+`END_YEAR`. Keep source folders available: source metadata contributes to run identity.
+
+You can validate an extension outside Blender without writing any output:
+
+```sh
+python scripts/extend_run.py "path/to/completed_run" --end-year 2096 --check
+```
+
+Omit `--check` to calculate without Blender; `--output-dir` changes the output parent.
+Scenario settings still come from `config.py`. Completed legacy
+`omaha-demand-sites-3.0` runs without optional layers can be restored from their
+annual states and version history, even without `continuation.json`.
+Runs with projects/infrastructure require their continuation contract. Other model
+versions, changed scenario settings, incomplete runs, and damaged files are rejected.
+Use the same Python/NumPy environment for numerical reproducibility across extensions.
 
 ## Find your files
 
@@ -118,4 +159,31 @@ Use Python 3.11+ with NumPy installed:
 python -m pip install ruff==0.16.10
 python -m ruff check .
 python -m unittest discover -s tests -q
+```
+# Extend an existing saved run
+
+Open the repository's saved `extend.py` in Blender's Text Editor and run it.
+The **Extend Saved Run** dialog reads the current scene's saved-run link when
+available. Otherwise select the completed run folder (or its `simulation`
+subfolder), then choose the new end year. Scenario settings are restored from
+the saved metadata, independently of the current scenario defaults in config.py.
+After a job completes, the MetroSim26 sidebar also offers **Extend Saved Run**.
+
+Compatible inputs are completed schema-3 MetroSim26 runs and the explicitly
+supported `omaha-demand-sites-3.0` legacy runs. Saved files and continuation
+contracts are validated before calculation. Partial runs, unsupported versions,
+and missing or modified checkpoints are rejected. A `.blend` alone cannot
+restore the simulation. If a saved folder moved, select its new location.
+Newly imported scenes record the saved-run location; older scenes can use their
+`configuration_json` run location where present. Save the resulting Blender
+file to retain that connection. This is a launcher, not an installed add-on.
+
+Only additional years are calculated; the full timeline is imported into a new
+scene. Original results are preserved, and manual scene edits are not copied.
+The output location uses the current `OUTPUT_DIR` setting. Existing personalized
+launchers remain usable, but `extend.py` replaces the need for city/year-specific
+launchers. For a read-only compatibility check outside Blender:
+
+```text
+python scripts/extend_run.py PATH_TO_SAVED_RUN --end-year 2096 --check
 ```

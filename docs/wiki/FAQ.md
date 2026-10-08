@@ -85,6 +85,10 @@ tail -n 30 -f ~/Documents/Blender_Logs/blender_live_console.log
 - Partially imported geometry is cleaned up.
 - An interrupted simulation does **not** resume from its last year.
 - Use `REPLAY` for a completed compatible run, or `SIMULATE` for a fresh one.
+- Use `EXTEND` with `EXTEND_FROM` and a later `END_YEAR` to continue a **completed**
+  run. Only the additional years are calculated. Blender imports a new full-timeline
+  scene; existing scenes and source results are retained. This does not resume a
+  cancelled partial run. See the README extension instructions.
 
 ## Can I move the folder or switch computers?
 

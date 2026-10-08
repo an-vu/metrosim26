@@ -380,7 +380,7 @@ class HistoricalTests(unittest.TestCase):
             directory = Path(result["run_directory"]) / "simulation"
             contract = read_continuation(directory)
             self.assertEqual(contract["next_year"], 2029)
-            self.assertFalse(contract["extension_execution_supported"])
+            self.assertTrue(contract["extension_execution_supported"])
             self.assertNotIn("end_year", contract["simulation_parameters"])
             self.assertEqual(
                 contract["ledger"]["households"], result["summary"][-1]["scenario_households"]
@@ -424,7 +424,7 @@ class HistoricalTests(unittest.TestCase):
             visual._set_object_lifetime(obj, 2010, 2020, 2006)
         self.assertEqual(obj.driver_add.return_value.driver.expression, "frame < 5 or frame >= 15")
 
-    def test_evidence_content_changes_identity_and_unsupported_extend_rejected(self):
+    def test_evidence_content_changes_identity_and_extend_requires_source(self):
         cfg = config.make_config(preview=True)
         cfg.update(historical_mode="EVIDENCE", timeline_start_year=2006)
         with tempfile.TemporaryDirectory() as tmp:
@@ -435,7 +435,7 @@ class HistoricalTests(unittest.TestCase):
             path.write_text('{"schema_version":1,"features":[],"events":[]}')
             self.assertNotEqual(before, config.run_directory(cfg))
             cfg["run_mode"] = "EXTEND"
-            with self.assertRaisesRegex(ValueError, "RUN_MODE"):
+            with self.assertRaisesRegex(ValueError, "EXTEND_FROM"):
                 config.validate_config(cfg)
 
 

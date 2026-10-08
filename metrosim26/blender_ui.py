@@ -75,6 +75,8 @@ class SceneImport:
         )
         scene["seed"] = int(cfg["seed"])
         scene["configuration_json"] = json.dumps(cfg, sort_keys=True)
+        scene["metrosim26_saved_run"] = str(Path(cfg["run_directory"]) / "simulation")
+        scene["metrosim26_link_version"] = 1
         scene.unit_settings.system = "METRIC"
         scene.unit_settings.scale_length = 1000.0
         scene.unit_settings.length_unit = "KILOMETERS"
@@ -310,6 +312,49 @@ def _cancel_on_load(*_args):
 
 if bpy is not None:
 
+    class METROSIM26_OT_extend(bpy.types.Operator):
+        bl_idname = "metrosim26.extend_saved_run"
+        bl_label = "Extend Saved Run"
+
+        # Explicit values are required because this module uses postponed annotations.
+        __annotations__ = {
+            "source": bpy.props.StringProperty(name="Saved run folder", subtype="DIR_PATH"),
+            "end_year": bpy.props.IntProperty(name="Extend through", default=2096, min=1),
+        }
+
+        def invoke(self, context, event):
+            from metrosim26.continuation import scene_source, source_directory
+
+            self.source = scene_source(context.scene)
+            if self.source:
+                try:
+                    directory = source_directory(bpy.path.abspath(self.source))
+                    metadata = json.loads((directory / "metadata.json").read_text(encoding="utf8"))
+                    self.end_year = metadata["end_year"] + 20
+                except (OSError, ValueError, KeyError):
+                    pass  # Keep the missing path visible so the user can locate the moved run.
+            return context.window_manager.invoke_props_dialog(self, width=520)
+
+        def draw(self, context):
+            self.layout.label(text="Choose a completed run folder (not a .blend file).")
+            self.layout.prop(self, "source")
+            self.layout.prop(self, "end_year")
+            self.layout.label(text="Original settings are restored automatically.")
+            self.layout.label(text="Results are imported into a new scene; originals are retained.")
+
+        def execute(self, context):
+            from metrosim26.continuation import extension_config
+
+            try:
+                if not self.source.strip():
+                    raise ValueError("Select the saved simulation or run folder first.")
+                cfg = extension_config(bpy.path.abspath(self.source), self.end_year)
+                start_blender_job(cfg)
+            except (OSError, ValueError, KeyError, RuntimeError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            return {"FINISHED"}
+
     class METROSIM26_OT_cancel(bpy.types.Operator):
         bl_idname = "metrosim26.cancel_simulation"
         bl_label = "Cancel Simulation"
@@ -331,6 +376,7 @@ if bpy is not None:
             run = _ACTIVE_RUN
             if run is None:
                 layout.label(text="Run blender.py to start")
+                layout.operator("metrosim26.extend_saved_run")
                 return
             status = run.status
             layout.label(text="Phase: " + status["phase"].replace("_", " ").title())
@@ -358,6 +404,16 @@ if bpy is not None:
                 row = layout.row()
                 row.enabled = not run.cancel_requested
                 row.operator("metrosim26.cancel_simulation")
+            else:
+                layout.operator("metrosim26.extend_saved_run")
+
+
+def show_extension_dialog():
+    """Register the reusable extension control without launching a calculation."""
+    assert bpy is not None
+    if not hasattr(bpy.types, "METROSIM26_OT_extend"):
+        bpy.utils.register_class(METROSIM26_OT_extend)
+    bpy.ops.metrosim26.extend_saved_run("INVOKE_DEFAULT")
 
 
 def start_blender_job(cfg):
@@ -373,6 +429,8 @@ def start_blender_job(cfg):
         )
     validate_config(cfg)
     if not _REGISTERED:
+        if not hasattr(bpy.types, "METROSIM26_OT_extend"):
+            bpy.utils.register_class(METROSIM26_OT_extend)
         bpy.utils.register_class(METROSIM26_OT_cancel)
         bpy.utils.register_class(METROSIM26_PT_status)
         atexit.register(_cancel_on_exit)

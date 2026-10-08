@@ -9,7 +9,8 @@ from pathlib import Path
 
 SEED = 872197  # Easy to change; all procedural randomness derives from this.
 PREVIEW_MODE = False
-RUN_MODE = "SIMULATE"  # AUTO | SIMULATE | REPLAY
+RUN_MODE = "SIMULATE"  # AUTO | SIMULATE | REPLAY | EXTEND
+EXTEND_FROM = ""  # Completed run folder (or its simulation folder); required for EXTEND.
 ENABLE_PARALLEL_COMPUTE = True
 CPU_WORKERS = 16
 PROFILE_PERFORMANCE = True
@@ -26,7 +27,7 @@ ENABLE_INFRASTRUCTURE = False
 HISTORICAL_MODE = "DISABLED"  # DISABLED | EVIDENCE (partial reconstruction, never reverse growth)
 TIMELINE_START_YEAR = None  # None uses BASE_YEAR; e.g. 2006 with HISTORICAL_MODE = "EVIDENCE"
 HISTORICAL_EVIDENCE_FILE = ""  # Optional local JSON; undocumented historical visibility is unknown.
-SAVE_CONTINUATION = False  # Export restart groundwork; EXTEND is not yet a supported run mode.
+SAVE_CONTINUATION = False  # Optional for ordinary runs; extensions always export a contract.
 EVOLUTION_SCHEMA_VERSION = 1
 CELL_KM = 0.35
 FULL_BOUNDS = (40.99031149984831, -96.43156075030879, 41.453886499728576, -95.61498024942590)
@@ -97,6 +98,7 @@ def make_config(preview=None):
         "seed": SEED,
         "preview_mode": preview_mode,
         "run_mode": RUN_MODE,
+        "extend_from": str(Path(EXTEND_FROM).expanduser().resolve()) if EXTEND_FROM else "",
         "enable_parallel_compute": ENABLE_PARALLEL_COMPUTE,
         "cpu_workers": CPU_WORKERS,
         "profile_performance": PROFILE_PERFORMANCE,
@@ -259,8 +261,10 @@ def validate_config(cfg):
         raise ValueError("Download attempts and timeout must be positive.")
     if any(cfg.get(key, 30) < 0 for key in ("download_backoff_initial", "download_backoff_max")):
         raise ValueError("Download backoff delays cannot be negative.")
-    if cfg["run_mode"].upper() not in {"AUTO", "SIMULATE", "REPLAY"}:
-        raise ValueError("RUN_MODE must be AUTO, SIMULATE, or REPLAY.")
+    if cfg["run_mode"].upper() not in {"AUTO", "SIMULATE", "REPLAY", "EXTEND"}:
+        raise ValueError("RUN_MODE must be AUTO, SIMULATE, REPLAY, or EXTEND.")
+    if cfg["run_mode"].upper() == "EXTEND" and not cfg.get("extend_from"):
+        raise ValueError("EXTEND requires EXTEND_FROM pointing to a completed saved run.")
     if cfg["end_year"] < cfg["base_year"]:
         raise ValueError("End year must not precede base year.")
     for name in ("annual_household_growth_rate", "annual_job_growth_rate"):
@@ -297,6 +301,14 @@ def validate_config(cfg):
 
 def simulation_config(cfg):
     cfg = dict(cfg)
+    source = cfg.pop("extend_from", "")
+    if source:
+        from metrosim26.continuation import source_directory
+
+        source = source_directory(source)
+        cfg["extension_source_sha256"] = hashlib.sha256(
+            (source / "metadata.json").read_bytes()
+        ).hexdigest()
     # Disabled additions must preserve legacy scenario identity as well as outputs.
     for enabled, prefix in (
         ("enable_projects", "project_"),

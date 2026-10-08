@@ -45,6 +45,18 @@ from metrosim26.workers import (
 )
 
 
+def replace_checkpoint(temporary, destination):
+    """Allow brief Windows reader/scanner locks without losing a completed checkpoint."""
+    for attempt in range(5):
+        try:
+            os.replace(temporary, destination)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.02 * 2**attempt)
+
+
 def atomic_json(path, data, compact=False):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -64,7 +76,7 @@ def atomic_json(path, data, compact=False):
         else:
             json.dump(data, out, sort_keys=True, indent=2, default=_json_default, allow_nan=False)
         out.write("\n")
-    os.replace(tmp, path)
+    replace_checkpoint(tmp, path)
 
 
 def atomic_npz(path, **arrays):
@@ -73,7 +85,7 @@ def atomic_npz(path, **arrays):
     tmp = path.with_name(path.name + ".tmp")
     with tmp.open("wb") as out:
         np.savez_compressed(out, **arrays)
-    os.replace(tmp, path)
+    replace_checkpoint(tmp, path)
 
 
 def _data_signature(value):
