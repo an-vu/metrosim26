@@ -1,3 +1,4 @@
 - [Home](Home.md)
 - [FAQ](FAQ.md)
+- [Roadmap](Roadmap.md)
 - [Setup](https://github.com/an-vu/metrosim26#readme)

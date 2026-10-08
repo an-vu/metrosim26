@@ -2,6 +2,7 @@
 
 - **New here?** Follow the [README setup guide](https://github.com/an-vu/metrosim26#readme).
 - **Have a question?** Read the [FAQ](FAQ.md).
+- **What's planned?** See the [roadmap and feature backlog](Roadmap.md).
 - **Want history, projects, or new roads?** Read the [feature guide](https://github.com/an-vu/metrosim26/blob/main/docs/evolution.md).
 
 ## How it works

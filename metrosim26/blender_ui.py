@@ -408,11 +408,17 @@ if bpy is not None:
                 layout.operator("metrosim26.extend_saved_run")
 
 
+def _register_extension_operator():
+    # Operators need not be exposed by their Python class name on bpy.types.
+    # The class itself records registration even when that attribute is absent.
+    if not getattr(METROSIM26_OT_extend, "is_registered", False):
+        bpy.utils.register_class(METROSIM26_OT_extend)
+
+
 def show_extension_dialog():
     """Register the reusable extension control without launching a calculation."""
     assert bpy is not None
-    if not hasattr(bpy.types, "METROSIM26_OT_extend"):
-        bpy.utils.register_class(METROSIM26_OT_extend)
+    _register_extension_operator()
     bpy.ops.metrosim26.extend_saved_run("INVOKE_DEFAULT")
 
 
@@ -429,8 +435,7 @@ def start_blender_job(cfg):
         )
     validate_config(cfg)
     if not _REGISTERED:
-        if not hasattr(bpy.types, "METROSIM26_OT_extend"):
-            bpy.utils.register_class(METROSIM26_OT_extend)
+        _register_extension_operator()
         bpy.utils.register_class(METROSIM26_OT_cancel)
         bpy.utils.register_class(METROSIM26_PT_status)
         atexit.register(_cancel_on_exit)
