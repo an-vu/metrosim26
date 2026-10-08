@@ -107,8 +107,8 @@ runtime.py → scene.py → Blender scene
 
 ## Help
 
-- [FAQ — data, progress, and performance](docs/wiki/FAQ.md).
-- [Wiki home](docs/wiki/Home.md). FAQ pages are maintained in `docs/wiki/`.
+- [FAQ — data, progress, and performance](https://github.com/an-vu/metrosim26/wiki/FAQ).
+- [Wiki home](https://github.com/an-vu/metrosim26/wiki). Source copies are maintained in `docs/wiki/`.
 
 ## Developer checks
 
