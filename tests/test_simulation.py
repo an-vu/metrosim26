@@ -14,9 +14,10 @@ from typing import Any
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import metrosim26.blender_ui as visual
+import metrosim26.blender.presentation as presentation
 import metrosim26.config as config
 import metrosim26.data as data
+import metrosim26.scene as geometry
 import metrosim26.simulation as simulation
 import metrosim26.workers as workers
 
@@ -521,7 +522,7 @@ class PlaybackGeometryTests(unittest.TestCase):
     def test_infill_does_not_duplicate_persistent_visual_geometry(self):
         a = {"id": "a", "construction_year": 2027}
         b = {"id": "b", "construction_year": 2028}
-        records = visual._visual_lifetime_records(
+        records = geometry._visual_lifetime_records(
             [
                 {
                     "id": "site",
@@ -552,7 +553,7 @@ class PlaybackGeometryTests(unittest.TestCase):
             "outer": [(0, 0), (5, 0), (5, 5), (3, 5), (3, 4), (0, 4)],
             "holes": [rectangle(1, 1, 2, 2)],
         }
-        vertices, faces = visual._building_geometry(polygon, 12, 3)
+        vertices, faces = geometry._building_geometry(polygon, 12, 3)
         for z in (0.01508, 0.00308):
             faces_at_z = [
                 [vertices[i] for i in face]
@@ -575,8 +576,8 @@ class PlaybackGeometryTests(unittest.TestCase):
                 return self.drivers[name]
 
         old, replacement = DriverObject(), DriverObject()
-        visual._set_object_lifetime(old, 2027, 2030, 2026)
-        visual._set_object_lifetime(replacement, 2030, None, 2026)
+        presentation._set_object_lifetime(old, 2027, 2030, 2026)
+        presentation._set_object_lifetime(replacement, 2030, None, 2026)
         for year in (2035, 2026, 2030, 2029, 2027, 2034, 2028, 2026):
             visible = []
             for obj in (old, replacement):

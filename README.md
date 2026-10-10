@@ -1,121 +1,113 @@
-# MetroSim26
+# MetroSim 26
 
-A city-growth simulation for **Blender 5.2.2**.
+Build a worldwide 3D map in **Blender 5.2.2**, or explore a regional city-growth scenario.
 
-- Starts with real map geometry and employment data for Omaha / Council Bluffs.
-- Simulates growth from **2026 to 2076**.
-- Builds a Blender scene so you can explore each year.
-- Runs calculations in a separate Python process.
-- Shows a possible future, not a prediction.
+- **3D map:** buildings, roads, parks, water, ocean and terrain.
+- **Growth simulation:** Omaha / Council Bluffs employment inputs and possible future development.
+- Works on Windows and macOS. Mac rendering currently falls back to CPU.
 
-## Start here
+## Start in Blender
 
-- Use **Windows or macOS**.
-- Install **Blender 5.2.2**. The launcher checks this exact version.
-- For the data downloader, use **Python 3.11 or newer** with NumPy.
-- Keep the whole repository together. Open the saved `blender.py`; do not paste it into an unnamed Blender text block.
+1. Keep the repository together. Open its saved **`metrosim.py`** in Blender's Text Editor.
+2. Run it. MetroSim opens **Layout → Sidebar (N) → MetroSim 26**.
+3. Choose a mode and enter coordinates. You can paste `22.29660° N, 113.95100° E` into either coordinate field.
+4. Choose a radius: default **2 miles**, measured from center to edge.
+5. Open **Include** to choose layers. All layers start enabled; the dropdown starts closed.
+6. Open **Storage** to choose where files go.
+7. Click **Download Area**. Completed downloads are reused.
+8. After success, a **10-second countdown** starts the map build. Cancel the countdown to keep only the downloads, or disable **Auto-build after download**.
 
-### 1. Download the data
+- **Preview Circle:** check your chosen boundary.
+- **Build Map:** build from prepared local inputs.
+- **Show build progress:** play an eight-second circular reveal once the map is ready. Roads follow the edge; buildings rise behind it.
+- The reveal temporarily uses Material Preview in solid/wireframe views, then restores your shading. Finished geometry stays unchanged.
+- Rerun `metrosim.py` after code changes. New Blender files do not require restarting Blender.
 
-Run these commands from your repository folder. Change the first path if you saved it somewhere else.
+## Appearance and expansion
 
-**Windows — PowerShell**
+- **Palette:** Natural is the default. Apple Maps, Slate & Earth, Bright, Monochrome and custom colors are available.
+- Colors update the current map immediately. Linked earlier maps may share materials.
+- **Cameras:** Overview frames the whole area; Map detail gives a closer angled view. Manually adjusted framing is preserved.
+- Increase the radius at the same center to choose **Expand existing** or **Rebuild**.
+- Compatible expansion reuses inner feature geometry and creates outer fragments. Roads/buildings finish grouped by their OSM feature IDs.
+- Land is regenerated across the full circle from cached elevation and finishes as one object. Ocean reuses existing water during expansion and finishes as one object.
+- Earlier scenes remain available. Older maps without feature IDs regenerate their grouping once.
 
-```powershell
-cd "$HOME\Desktop\metrosim26"
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install numpy
-.\.venv\Scripts\python.exe scripts\prefetch_data.py --full
-```
+## Storage and cleanup
 
-**macOS — Terminal**
+Defaults under your home folder:
 
-```sh
-cd ~/Desktop/metrosim26
-python3 -m venv .venv
-.venv/bin/python -m pip install numpy
-.venv/bin/python scripts/prefetch_data.py --full
-```
-
-- On Mac, check `python3 --version` first: it must be **3.11+**.
-- Wait for **`CACHE READY FOR BLENDER`**.
-- If downloading stops, run the last command again. Completed files are reused.
-- Blender reads this local cache; it does not download data during a run.
-
-### 2. Open Blender
-
-1. Open Blender **5.2.2** → **Scripting** → **Text Editor**.
-2. Optional: open and run `live_logger.py` to record the console.
-3. Open the root `blender.py` from disk → **Run Script**.
-4. In the 3D Viewport, press **N** → **MetroSim26** to watch progress or cancel.
-5. Wait for **Ready**, then scrub the timeline.
-
-- **Frame 1:** 2026.
-- **Frame 25:** 2050.
-- **Frame 51:** 2076.
-- The launcher finds the other files and Blender's Python automatically.
-- Mac rendering currently uses the **CPU fallback**. Metal is not configured by this project.
-- If Python detection fails, set `WORKER_PYTHON` in `metrosim26/config.py`. Its NumPy version must match Blender's.
-
-## Change the run
-
-Edit **[metrosim26/config.py](metrosim26/config.py)**.
-
-| Setting | What it does |
+| Folder | Contents |
 | --- | --- |
-| `PREVIEW_MODE = True` | Smaller run, ending in 2035. Download with `--preview` instead of `--full`. |
-| `RUN_MODE = "SIMULATE"` | Calculate a new run. |
-| `RUN_MODE = "REPLAY"` | Open compatible saved results. |
-| `RUN_MODE = "AUTO"` | Reuse compatible results, or calculate if none exist. |
-| `CPU_WORKERS = 16` | Maximum planning workers; the actual count may be lower. |
-| `ENABLE_PROJECTS = True` | Add fictional developments built in phases. |
-| `ENABLE_INFRASTRUCTURE = True` | Add demand-driven access roads. |
+| `Desktop/MetroSim 26 Data/Cache` | Shared downloads and location indexes |
+| `Desktop/MetroSim 26 Data/Output` | Jobs, meshes, results and logs |
+| `Documents/Blender_Logs` | Optional `live_logger.py` console log |
 
-- Projects and infrastructure are off by default.
-- Historical evidence and optional features: [feature guide](docs/evolution.md).
-- Extending a saved run with `EXTEND` is not implemented yet.
+- Names label locations; coordinates and input versions determine cache reuse.
+- Overlapping areas can reuse matching data, even with different location names.
+- Changing a storage path does not move previous files.
+- **Organize downloaded files:** consolidate validated downloads and make a readable saved-area index. Original files stay intact.
+- **Clean current Blender project:** remove unused generated Blender data; older scenes are optional.
+- **Archive failed jobs:** move eligible failed/cancelled jobs into `Output/_Archived_Jobs`.
+- Cancel keeps completed downloads. Interrupted growth simulations do not resume from their last year.
 
-## Find your files
+## Growth mode
 
-Paths are relative to your home folder on both systems:
+- Select **Growth simulation** for the supported Omaha / Council Bluffs region.
+- Default future: **2026–2076**. Preview ends in **2035**.
+- Development follows **infill → redevelopment → expansion** with demand and placement checks.
+- Calculations run outside Blender. Scene import and optional saving/rendering run inside Blender.
+- Growth import can overlap calculation; future objects have timeline visibility by year.
+- **Pause visible build** pauses import/reveal, not calculation. Chunk-speed controls apply to growth import.
+- Optional projects, infrastructure and historical evidence: [feature guide](docs/evolution.md).
+- `REPLAY` opens compatible completed results. `EXTEND` is not implemented.
 
-- **Input cache:** `Documents/Blender_MetroSim26_V3_Cache`.
-- **Results:** `Documents/Blender_MetroSim26_V3_Output`.
-- **Optional console log:** `Documents/Blender_Logs/blender_live_console.log`.
-- Each run prints its job folder. It contains `progress.json` and `calculation.log`.
-- Canceling keeps completed runs and downloaded data. It does not resume an interrupted simulation.
-- After upgrading from Urban Generator, download again and use `SIMULATE`. Old results use a different identity.
+## Limits to know
+
+- Buildings and heights are simplified; missing heights may be estimated.
+- Inland water follows terrain triangles with 30 cm clearance. This prevents clipping but is not measured river level or riverbed data.
+- Coastlines and terrain are approximate. Bridges use estimated clearance; tunnels are omitted.
+- Terrain is a map visualization layer; growth planning stays flat.
+- Circles crossing the date line/poles, or centered at latitude ±85° or beyond, are unsupported.
+- Time estimates need comparable local runs and are not guarantees.
+- Expansion still reads/prepares the larger area. More than 400,000 terrain cells requires rebuilding at coarser spacing.
 
 ## Code map
 
 ```text
-scripts/prefetch_data.py → local data cache
-blender.py → blender_ui.py → runtime.py
-runtime.py → data.py → simulation.py → workers.py
-runtime.py → scene.py → Blender scene
+metrosim.py → blender_ui.py → runtime.py
+                              ├─ datasets/ → cached baseline
+                              ├─ growth/ → optional simulation
+                              └─ scene.py + geometry/ → mesh packets
+blender/scene_import.py → cameras + lighting + presentation + reveal
 ```
 
-- **`config.py`:** settings and paths.
-- **`data.py`:** read maps and employment data; prepare the starting city.
-- **`simulation.py`:** decide how the city grows each year.
-- **`workers.py`:** calculate building layouts.
-- **`runtime.py`:** run calculations, save results, and report progress.
-- **`scene.py`:** prepare geometry for Blender.
-- **`blender_ui.py`:** progress panel and scene import.
-- **`history.py`, `projects.py`, `infrastructure.py`:** optional city-history features.
-- **`tests/`:** offline checks. **`docs/`:** guides and wiki source pages.
-
-## Help
-
-- [FAQ — data, progress, and performance](https://github.com/an-vu/metrosim26/wiki/FAQ).
-- [Wiki home](https://github.com/an-vu/metrosim26/wiki). Source copies are maintained in `docs/wiki/`.
+- `geometry/`: separate ground, water, terrain, coastline, buildings, roads and packet helpers.
+- `datasets/`: separate cache, validation, downloads, parsing and baseline preparation.
+- `growth/`: rules, parallel planning, yearly calculation and checkpoints.
+- `blender/`: separate layout, fields, buttons, job scheduling, scene import and appearance.
+- `blender_ui.py`: registration, session state and settings conversion.
+- `config.py`: run identity. `storage.py`: saved-data organization. `regions/`: regional growth inputs.
+- [Code guide](docs/wiki/Code-guide.md): where each responsibility lives and what to test.
 
 ## Developer checks
 
 Use Python 3.11+ with NumPy installed:
 
 ```sh
-python -m pip install ruff==0.16.10
+python -m pip install numpy ruff==0.16.10
 python -m ruff check .
 python -m unittest discover -s tests -q
 ```
+
+Native Blender smoke check (use your Blender executable):
+
+```sh
+blender --background --factory-startup --python-exit-code 1 --python tests/blender_smoke.py
+```
+
+- The launcher finds Blender's Python. A custom `WORKER_PYTHON` must match Blender's NumPy version.
+- `scripts/prefetch_data.py --preview` or `--full` prepares the rectangular presets in `config.py`; use Blender's **Download Area** for your selected circle.
+- Personal `.code-workspace` and `.vscode/` files are ignored by Git.
+
+[Wiki](https://github.com/an-vu/metrosim26/wiki) · [FAQ](https://github.com/an-vu/metrosim26/wiki/FAQ)

@@ -34,3 +34,7 @@ htmlcov/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Personal VS Code workspace settings
+*.code-workspace
+.vscode/

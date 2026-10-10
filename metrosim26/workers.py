@@ -41,7 +41,7 @@ class Grid:
         self.shape = (self.ny, self.nx)
 
     def project(self, lon, lat):
-        # Local equirectangular approximation, adequate for scenario-scale Omaha.
+        # Local equirectangular approximation, adequate for metro-scale areas.
         return ((lon - self.center_lon) * 111.320 * self.cos_lat, (lat - self.center_lat) * 110.574)
 
     def index(self, x, y):
@@ -264,6 +264,9 @@ def prepare_spatial_index(b, grid):
 def footprint_allowed(poly, b, grid, gx, gy, clearance_km=0.0):
     """Exact narrow-phase check after bucket lookup; partial cells stay usable."""
     if len(poly) < 3 or polygon_area(poly) < 1e-12:
+        return False
+    radius = b.get("study_radius_km")
+    if radius and any(x * x + y * y > (radius - clearance_km) ** 2 for x, y in poly):
         return False
     allowed = grid.cell_bounds(gx, gy)
     box = _bbox(poly)
@@ -669,6 +672,8 @@ def load_worker_state(directory):
             "cells": _MappedCells(arrays, grid.nx),
         },
     }
+    if inputs["cfg"].get("study_radius_km"):
+        baseline["study_radius_km"] = inputs["cfg"]["study_radius_km"]
     return inputs["cfg"], grid, baseline
 
 
@@ -737,4 +742,4 @@ if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--broker":
         broker_main(sys.argv[2], int(sys.argv[3]))
     else:
-        raise SystemExit("This helper is launched automatically by blender.py.")
+        raise SystemExit("This helper is launched automatically by metrosim.py.")

@@ -5,7 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
+
+from metrosim26.regions.omaha_council_bluffs import (
+    DOWNTOWN_ANCHOR,
+    FULL_BOUNDS,
+    LODES_STATES,
+    PREVIEW_BOUNDS,
+    validate_growth_bounds,
+)
 
 SEED = 872197  # Easy to change; all procedural randomness derives from this.
 PREVIEW_MODE = False
@@ -29,8 +38,7 @@ HISTORICAL_EVIDENCE_FILE = ""  # Optional local JSON; undocumented historical vi
 SAVE_CONTINUATION = False  # Export restart groundwork; EXTEND is not yet a supported run mode.
 EVOLUTION_SCHEMA_VERSION = 1
 CELL_KM = 0.35
-FULL_BOUNDS = (40.99031149984831, -96.43156075030879, 41.453886499728576, -95.61498024942590)
-PREVIEW_BOUNDS = (41.22, -96.06, 41.31, -95.89)
+
 
 # Household baseline is estimated from OSM floorspace when None. Supply a known
 # study-area household count here to replace that assumption. Jobs use WAC sum.
@@ -61,8 +69,8 @@ OSM_QUERY_VERSION = "metrosim26-v3-relations-1"
 OSM_DATA_SNAPSHOT = None  # Optional Overpass historical ISO UTC date string.
 MODEL_VERSION = "metrosim26-demand-sites-3.0"
 STATE_SCHEMA_VERSION = 3
-CACHE_ROOT = Path.home() / "Documents" / "Blender_MetroSim26_V3_Cache"
-OUTPUT_ROOT = Path.home() / "Documents" / "Blender_MetroSim26_V3_Output"
+CACHE_ROOT = Path.home() / "Desktop" / "MetroSim 26 Data" / "Cache"
+OUTPUT_ROOT = Path.home() / "Desktop" / "MetroSim 26 Data" / "Output"
 
 # Visualization settings never affect generated simulation states.
 VERTICAL_EXAGGERATION = 1.25
@@ -175,12 +183,12 @@ def make_config(preview=None):
         "highrise_min_neighbor_fraction": 0.45,
         "highrise_min_housing_demand": 150.0,
         "highrise_min_job_demand": 100.0,
-        "downtown_anchor": [-95.9345, 41.2565],
+        "downtown_anchor": list(DOWNTOWN_ANCHOR),
         "centrality_decay_km": 5.0,
         "lodes_year": LODES_YEAR,
         "lodes_version": LODES_VERSION,
         "lodes_vintage": LODES_VINTAGE,
-        "lodes_states": ["ne", "ia"],
+        "lodes_states": list(LODES_STATES),
         "lodes_job_type": "JT00",
         "osm_query_version": OSM_QUERY_VERSION,
         "osm_data_snapshot": OSM_DATA_SNAPSHOT,
@@ -214,6 +222,30 @@ def make_config(preview=None):
 
 
 def validate_config(cfg):
+    if cfg.get("view_mode", "GROWTH") not in {"MAP", "GROWTH"}:
+        raise ValueError("Choose 3D map or Growth simulation.")
+    if "study_radius_km" in cfg:
+        radius = cfg["study_radius_km"]
+        center = cfg.get("study_center", [])
+        if (
+            not isinstance(radius, (float, int))
+            or not math.isfinite(radius)
+            or not 0.1 <= radius <= 200
+        ):
+            raise ValueError("Study radius must be between 0.1 and 200 km.")
+        if len(center) != 2 or not all(
+            isinstance(v, (float, int)) and math.isfinite(v) for v in center
+        ):
+            raise ValueError("Study center must contain longitude and latitude.")
+        south, west, north, east = cfg["bounds"]
+        if cfg.get("view_mode", "GROWTH") == "GROWTH":
+            validate_growth_bounds(cfg["bounds"])
+        if not (-90 < south < north < 90 and -180 <= west < east <= 180):
+            raise ValueError(
+                "This circle crosses a pole or the date line. These boundary-crossing areas are not supported by the current map projection. Reduce radius or move center."
+            )
+        if abs(center[0] - (west + east) / 2) > 1e-8 or abs(center[1] - (south + north) / 2) > 1e-8:
+            raise ValueError("Circular bounds must be centered on the selected location.")
     if cfg.get("timeline_start_year") is not None and type(cfg["timeline_start_year"]) is not int:
         raise ValueError("TIMELINE_START_YEAR must be an integer or None.")
     if cfg.get("historical_mode", "DISABLED") not in {"DISABLED", "EVIDENCE"}:
@@ -331,6 +363,23 @@ def simulation_config(cfg):
     ):
         cfg["evolution_schema_version"] = EVOLUTION_SCHEMA_VERSION
     visual_keys = {
+        "include_buildings",
+        "include_roads",
+        "include_parks",
+        "include_water",
+        "include_ocean",
+        "include_terrain",
+        "include_ground",
+        "palette",
+        "display_units",
+        "auto_location_name",
+        "location_name",
+        "location_label",
+        "auto_build",
+        "expand_scene",
+        "expand_inner_radius_km",
+        "geometry_layout_version",
+        "terrain_spacing_km",
         "data_mode",
         "overpass_url",
         "overpass_fallback_urls",
@@ -339,6 +388,7 @@ def simulation_config(cfg):
         "run_mode",
         "output_dir",
         "cache_dir",
+        "reuse_cache_dir",
         "run_directory",
         "download_workers",
         "download_timeout",
@@ -355,6 +405,8 @@ def simulation_config(cfg):
         "require_optix",
         "render_device_name",
         "mesh_chunk_vertices",
+        "progressive_build",
+        "job_action",
     }
     return {
         key: value
@@ -368,7 +420,8 @@ def run_directory(cfg):
         json.dumps(simulation_config(cfg), sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:16]
     label = "preview" if cfg["preview_mode"] else "full"
-    return Path(cfg["output_dir"]) / f"{label}_{cfg['seed']}_{digest}"
+    name = re.sub(r"[^\w -]", "", cfg.get("location_name", "")).strip().replace(" ", "_")[:60]
+    return Path(cfg["output_dir"]) / f"{name or label}_{cfg['seed']}_{digest}"
 
 
 PERFORMANCE_KEYS = {
@@ -394,3 +447,39 @@ def timeline_start(cfg):
 
 def evolution_enabled(cfg):
     return bool(cfg.get("enable_projects") or cfg.get("enable_infrastructure"))
+
+
+def circle_config(cfg, latitude, longitude, radius, units="KM"):
+    """Worldwide circular map viewing; growth remains scoped to its regional inputs."""
+    # Canonicalize at the panel's useful precision so Blender's float properties
+    # and switching miles/km do not create different cache/run identities.
+    latitude, longitude = round(float(latitude), 5), round(float(longitude), 5)
+    radius_km = round(float(radius) * (1.609344 if units == "MILES" else 1.0), 4)
+    if (
+        units not in {"KM", "MILES"}
+        or not all(math.isfinite(v) for v in (latitude, longitude, radius_km))
+        or not 0.1 <= radius_km <= 200
+    ):
+        raise ValueError("Choose a finite radius between 0.1 and 200 km.")
+    if not -85 < latitude < 85 or not -180 <= longitude <= 180:
+        raise ValueError("Invalid latitude or longitude.")
+    buffer_km = float(cfg.get("road_influence_km", 0.8))
+    download_radius = radius_km + buffer_km
+    dy = download_radius / 110.574
+    dx = download_radius / (111.320 * math.cos(math.radians(latitude)))
+    bounds = [latitude - dy, longitude - dx, latitude + dy, longitude + dx]
+    if cfg.get("view_mode", "GROWTH") == "GROWTH":
+        validate_growth_bounds(bounds)
+    result = dict(
+        cfg,
+        bounds=bounds,
+        study_radius_km=radius_km,
+        study_center=[longitude, latitude],
+        study_buffer_km=buffer_km,
+        progressive_build=True,
+    )
+    count = max(1, math.ceil(2 * download_radius / 8))
+    result["osm_tiles"] = [count, count]
+    # Drawing/reveal options never change the simulation identity.
+    validate_config(result)
+    return result

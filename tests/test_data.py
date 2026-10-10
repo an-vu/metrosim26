@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.request
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,9 @@ from unittest.mock import patch
 from test_simulation import config, data, synthetic_baseline
 from test_simulation import simulation as simulation
 
+from metrosim26.datasets import cache as data_cache
+from metrosim26.datasets import download as data_download
+from metrosim26.datasets import validation as data_validation
 from scripts import prefetch_data as prefetch
 
 
@@ -65,6 +69,7 @@ class AcquisitionTests(unittest.TestCase):
         self.output.__enter__()
         self.addCleanup(self.output.__exit__, None, None, None)
         data._VALIDATED_INPUTS.clear()
+        self.cfg.pop("_endpoint_health", None)
 
     def test_full_and_preview_inventory_and_transport_independence(self):
         full = config.make_config()
@@ -98,9 +103,7 @@ class AcquisitionTests(unittest.TestCase):
 
     def test_valid_legacy_cache_skips_network_and_records_unknown_source(self):
         populate(self.cfg)
-        with patch.object(
-            data.urllib.request, "urlopen", side_effect=AssertionError("Unexpected HTTP")
-        ):
+        with patch.object(urllib.request, "urlopen", side_effect=AssertionError("Unexpected HTTP")):
             self.assertTrue(data.prefetch_data(self.cfg))
             self.assertTrue(data.prefetch_data(self.cfg))
         manifest = json.loads(data.cache_manifest_path(self.cfg).read_text())
@@ -110,17 +113,15 @@ class AcquisitionTests(unittest.TestCase):
     def test_missing_cache_fails_before_any_large_file_validation_or_http(self):
         specs = data.expected_inputs(self.cfg)
         with (
-            patch.object(data, "validate_input", side_effect=AssertionError("Not fail-fast")),
             patch.object(
-                data.urllib.request, "urlopen", side_effect=AssertionError("Offline HTTP")
+                data_validation, "validate_input", side_effect=AssertionError("Not fail-fast")
             ),
-            patch.object(data.time, "sleep", side_effect=AssertionError("Offline retry")),
+            patch.object(urllib.request, "urlopen", side_effect=AssertionError("Offline HTTP")),
+            patch.object(time, "sleep", side_effect=AssertionError("Offline retry")),
         ):
             with self.assertRaises(FileNotFoundError) as error:
                 data.require_input_cache(self.cfg)
-        with patch.object(
-            data.urllib.request, "urlopen", side_effect=AssertionError("Offline HTTP")
-        ):
+        with patch.object(urllib.request, "urlopen", side_effect=AssertionError("Offline HTTP")):
             with self.assertRaises(FileNotFoundError):
                 data._download_cached(specs[0], self.cfg)
         # Direct loader also checks for missing files without opening a socket.
@@ -133,9 +134,7 @@ class AcquisitionTests(unittest.TestCase):
         self.cfg = config.make_config(preview=False)
         self.cfg["cache_dir"] = self.temp.name
         populate(self.cfg)
-        with patch.object(
-            data.urllib.request, "urlopen", side_effect=AssertionError("Offline HTTP")
-        ):
+        with patch.object(urllib.request, "urlopen", side_effect=AssertionError("Offline HTTP")):
             data.require_input_cache(self.cfg)
             grid = simulation.Grid(tuple(self.cfg["bounds"]), self.cfg["cell_km"])
             elements, osm = data.load_osm(self.cfg, grid)
@@ -199,7 +198,7 @@ class AcquisitionTests(unittest.TestCase):
             calls.append(spec.path)
             return BrokenResponse(payload(spec)) if spec == failed else Response(payload(spec))
 
-        with patch.object(data.urllib.request, "urlopen", side_effect=network):
+        with patch.object(urllib.request, "urlopen", side_effect=network):
             self.assertFalse(data.prefetch_data(self.cfg))
         self.assertFalse(failed.path.exists())
         self.assertEqual(len(calls), 10)
@@ -207,9 +206,7 @@ class AcquisitionTests(unittest.TestCase):
         calls.clear()
         failed_body = payload(failed)
         failed = None
-        with patch.object(
-            data.urllib.request, "urlopen", return_value=Response(failed_body)
-        ) as request:
+        with patch.object(urllib.request, "urlopen", return_value=Response(failed_body)) as request:
             self.assertTrue(data.prefetch_data(self.cfg))
             self.assertEqual(request.call_count, 1)
         manifest = json.loads(data.cache_manifest_path(self.cfg).read_text())
@@ -220,6 +217,71 @@ class AcquisitionTests(unittest.TestCase):
                 for item in manifest["files"]
             )
         )
+
+    def test_primary_retries_and_broken_backups_are_skipped(self):
+        cfg = dict(
+            self.cfg,
+            data_mode="ONLINE",
+            download_attempts=3,
+            overpass_fallback_urls=["https://broken-a.example/", "https://broken-b.example/"],
+        )
+        spec = data.osm_inputs(cfg)[0]
+        calls = []
+        primary_calls = 0
+
+        def attempt(endpoint, post, path, settings):
+            nonlocal primary_calls
+            calls.append(endpoint)
+            if endpoint != spec.url:
+                raise data.DownloadAttemptError("server failure", http_code=500)
+            primary_calls += 1
+            if primary_calls < 3:
+                raise data.DownloadAttemptError("temporary timeout", http_code=504)
+            Path(path).write_bytes(payload(spec))
+            return endpoint
+
+        with (
+            patch.object(data_download, "_download_attempt_with_deadline", side_effect=attempt),
+            patch.object(time, "sleep") as sleep,
+        ):
+            data._download_cached(spec, cfg)
+            self.assertEqual(calls.count(spec.url), 3)
+            self.assertEqual(calls.count("https://broken-a.example/"), 1)
+            self.assertEqual(calls.count("https://broken-b.example/"), 1)
+            self.assertIn(unittest.mock.call(60.0), sleep.call_args_list)
+            spec.path.unlink()
+            calls.clear()
+            primary_calls = 0
+            data._download_cached(spec, cfg)
+            self.assertEqual(calls, [spec.url] * 3)
+
+    def test_detailed_location_keeps_neighborhood_and_town(self):
+        address = {
+            "quarter": "Tung Chung North",
+            "suburb": "Tung Chung Town",
+            "town": "Tung Chung",
+            "city": "Hong Kong",
+            "region": "Hong Kong",
+            "country": "China",
+        }
+        with patch.object(
+            urllib.request,
+            "urlopen",
+            return_value=Response(json.dumps({"address": address}).encode()),
+        ):
+            record = data.lookup_location(22.2966, 113.951, self.temp.name)
+        self.assertEqual(record["label"], "Tung Chung North, Tung Chung, Hong Kong, China")
+
+    def test_location_lookup_is_cached_and_has_clear_place_name(self):
+        record = {"address": {"city": "Omaha", "state": "Nebraska", "country": "United States"}}
+        with patch.object(
+            urllib.request, "urlopen", return_value=Response(json.dumps(record).encode())
+        ) as request:
+            first = data.lookup_location(41.25, -95.99, self.temp.name)
+            second = data.lookup_location(41.25, -95.99, self.temp.name)
+            self.assertEqual(first, second)
+            self.assertEqual(first["label"], "Omaha, Nebraska, United States")
+            self.assertEqual(request.call_count, 1)
 
     def test_retry_after_and_transient_failures_and_fallback_provenance(self):
         spec = data.osm_inputs(self.cfg)[0]
@@ -243,18 +305,25 @@ class AcquisitionTests(unittest.TestCase):
         rate_limit_headers["Retry-After"] = "123"
         failures += [urllib.error.HTTPError(spec.url, 429, "busy", rate_limit_headers, None)]
         for failure in failures:
+            cfg.pop("_endpoint_health", None)
             with self.subTest(failure=repr(failure)):
                 spec.path.unlink(missing_ok=True)
                 with (
                     patch.object(
-                        data.urllib.request,
+                        urllib.request,
                         "urlopen",
                         side_effect=[failure, Response(payload(spec))],
                     ) as request,
-                    patch.object(data.time, "sleep") as sleep,
+                    patch.object(time, "sleep") as sleep,
                 ):
                     record = data._download_cached(spec, cfg)
-                delay = 123 if getattr(failure, "code", None) == 429 else 30
+                delay = (
+                    123
+                    if getattr(failure, "code", None) == 429
+                    else 1
+                    if getattr(failure, "code", None) in {500, 502, 503, 504}
+                    else 30
+                )
                 sleep.assert_called_once_with(delay)
                 self.assertEqual(request.call_args.args[0].full_url, "https://fallback.example/")
                 self.assertEqual(record["requested_url"], "https://fallback.example/")
@@ -263,7 +332,7 @@ class AcquisitionTests(unittest.TestCase):
         date_headers["Retry-After"] = "Thu, 01 Jan 1970 00:02:00 GMT"
         error = urllib.error.HTTPError(spec.url, 429, "busy", date_headers, None)
         self.addCleanup(error.close)
-        with patch.object(data.time, "time", return_value=60):
+        with patch.object(time, "time", return_value=60):
             self.assertEqual(data._retry_delay(error, 0, cfg), 60)
 
     def test_bad_response_never_replaces_existing_file(self):
@@ -272,7 +341,7 @@ class AcquisitionTests(unittest.TestCase):
         spec.path.write_bytes(b"old invalid cache")
         cfg = dict(self.cfg, data_mode="ONLINE")
         with patch.object(
-            data.urllib.request, "urlopen", return_value=Response(b'{"remark":"timeout"}')
+            urllib.request, "urlopen", return_value=Response(b'{"remark":"timeout"}')
         ):
             with self.assertRaises(RuntimeError):
                 data._download_cached(spec, cfg)
@@ -312,10 +381,9 @@ class AcquisitionTests(unittest.TestCase):
         self.assertTrue(data.prefetch_data(self.cfg))
         spec = data.osm_inputs(self.cfg)[0]
         spec.path.write_bytes(b'{"elements":[],"remark":"incomplete"}')
-        data._VALIDATED_INPUTS.clear()  # Simulate a separate Blender process.
-        with patch.object(
-            data.urllib.request, "urlopen", side_effect=AssertionError("Offline HTTP")
-        ):
+        data._VALIDATED_INPUTS.clear()
+        self.cfg.pop("_endpoint_health", None)  # Simulate a separate Blender process.
+        with patch.object(urllib.request, "urlopen", side_effect=AssertionError("Offline HTTP")):
             with self.assertRaisesRegex(FileNotFoundError, "OSM tile 1"):
                 data.require_input_cache(self.cfg)
 
@@ -326,7 +394,7 @@ class AcquisitionTests(unittest.TestCase):
             for p in Path(self.temp.name).rglob("*")
             if p.is_file()
         }
-        with patch.object(data.urllib.request, "urlopen", side_effect=AssertionError("Check HTTP")):
+        with patch.object(urllib.request, "urlopen", side_effect=AssertionError("Check HTTP")):
             self.assertEqual(
                 prefetch.main(["--preview", "--check", "--cache-dir", self.temp.name]), 0
             )
@@ -340,7 +408,7 @@ class AcquisitionTests(unittest.TestCase):
     def test_keyboard_interrupt_keeps_completed_inputs_and_removes_partial(self):
         spec = data.osm_inputs(self.cfg)[0]
         with patch.object(
-            data,
+            data_download,
             "_download_attempt_with_deadline",
             side_effect=KeyboardInterrupt(),
         ):
@@ -375,7 +443,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
 
     def test_saved_text_path_beats_unusable_file_path(self):
         root = Path(__file__).resolve().parents[1]
-        spec = importlib.util.spec_from_file_location("entry", root / "blender.py")
+        spec = importlib.util.spec_from_file_location("entry", root / "metrosim.py")
         assert spec is not None and spec.loader is not None
         entry = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(entry)
@@ -397,18 +465,18 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                 "infrastructure.py",
             ):
                 (package / name).touch()
-            text = SimpleNamespace(filepath="//blender.py")
+            text = SimpleNamespace(filepath="//metrosim.py")
             bpy = SimpleNamespace(
                 context=SimpleNamespace(space_data=SimpleNamespace(text=text)),
-                path=SimpleNamespace(abspath=lambda path: str(folder / "blender.py")),
+                path=SimpleNamespace(abspath=lambda path: str(folder / "metrosim.py")),
             )
             with (
                 patch.dict(sys.modules, bpy=bpy),
-                patch.object(entry, "__file__", "/missing/blender.py"),
+                patch.object(entry, "__file__", "/missing/metrosim.py"),
             ):
                 self.assertEqual(entry.project_directory(), folder.resolve())
                 text.filepath = ""
-                with self.assertRaisesRegex(RuntimeError, "saved blender.py"):
+                with self.assertRaisesRegex(RuntimeError, "saved metrosim.py"):
                     entry.project_directory()
 
     def test_missing_inputs_do_not_invalidate_previous_completed_run(self):
@@ -428,7 +496,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
             metadata = Path(result["run_directory"]) / "simulation" / "metadata.json"
             saved = metadata.read_bytes()
             with patch.object(
-                data.urllib.request, "urlopen", side_effect=AssertionError("Offline HTTP")
+                urllib.request, "urlopen", side_effect=AssertionError("Offline HTTP")
             ):
                 with self.assertRaisesRegex(FileNotFoundError, "input cache is incomplete"):
                     simulation.prepare_simulation(cfg)
@@ -459,9 +527,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
             metadata["simulation_config"]["overpass_url"] = "https://old-endpoint.example/"
             metadata_path.write_text(json.dumps(metadata))
             cfg.update(run_mode="REPLAY", overpass_url="https://new-endpoint.example/")
-            with patch.object(
-                data.urllib.request, "urlopen", side_effect=AssertionError("Replay HTTP")
-            ):
+            with patch.object(urllib.request, "urlopen", side_effect=AssertionError("Replay HTTP")):
                 _, _, loaded = simulation.prepare_simulation(cfg)
             self.assertEqual(Path(loaded["run_directory"]), historical)
             self.assertEqual(result["summary"], loaded["summary"])
@@ -472,3 +538,87 @@ runpy.run_path(sys.argv[0], run_name='__main__')
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeographicReuseTests(unittest.TestCase):
+    def test_overlap_and_renamed_location_reuse_other_folder_without_network(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = config.make_config(preview=True)
+            source.update(view_mode="MAP", cache_dir=str(Path(directory) / "old"))
+            source = config.circle_config(source, 41.25, -95.95, 4, "MILES")
+            populate(source)
+            target = config.circle_config(source, 41.26, -95.95, 2, "MILES")
+            target.update(
+                cache_dir=str(Path(directory) / "new"),
+                reuse_cache_dir=source["cache_dir"],
+                location_name="Council Bluffs",
+            )
+            with (
+                patch.object(data_cache, "cache_roots", return_value=[Path(source["cache_dir"])]),
+                patch.object(
+                    data_download,
+                    "_download_attempt_with_deadline",
+                    side_effect=AssertionError("Network forbidden"),
+                ),
+            ):
+                result = data.discover_cached_inputs(target)
+                self.assertGreater(result["reused"], 0)
+                self.assertEqual(result["missing"], 0)
+                for spec in data.expected_inputs(target):
+                    data.validate_input(spec)
+            self.assertTrue(next(Path(source["cache_dir"]).glob("osm/*.json")).exists())
+
+    def test_invalid_source_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.make_config(preview=True)
+            cfg.update(view_mode="MAP", cache_dir=str(Path(directory) / "new"))
+            cfg = config.circle_config(cfg, 41.25, -95.95, 2, "MILES")
+            source = Path(directory) / "old"
+            spec = data.expected_inputs(cfg)[0]
+            path = source / spec.path.relative_to(cfg["cache_dir"])
+            path.parent.mkdir(parents=True)
+            path.write_text("broken")
+            with patch.object(data_cache, "cache_roots", return_value=[source]):
+                self.assertFalse(data.reuse_cached_input(spec, cfg))
+            self.assertFalse(spec.path.exists())
+
+
+class ConsolidationTests(unittest.TestCase):
+    def test_consolidates_aliases_and_downloads_without_deleting_sources(self):
+        from metrosim26.storage import consolidate
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "old"
+            target = Path(directory) / "new"
+            cfg = config.make_config(preview=True)
+            cfg.update(view_mode="MAP", cache_dir=str(source))
+            cfg = config.circle_config(cfg, 22.2966, 113.951, 2, "MILES")
+            populate(cfg)
+            for name in ("Hong Kong A", "Hong Kong B"):
+                path = source / "Locations" / name / "area.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(
+                    json.dumps(dict(name=name, center=cfg["study_center"], radius_km=2))
+                )
+            broken = source / "osm" / "tile_broken.json"
+            broken.write_text("broken")
+            cfg.update(
+                cache_dir=str(target),
+                reuse_cache_dir=str(source),
+                output_dir=str(Path(directory) / "output"),
+                location_name="Hong Kong",
+            )
+            with patch.object(data, "cache_roots", return_value=[target, source]):
+                result = consolidate(cfg)
+                self.assertGreater(result["copied"], 0)
+                self.assertEqual(result["areas"], 1)
+                self.assertEqual(result["invalid"], 1)
+                again = consolidate(cfg)
+                self.assertEqual(again["copied"], 0)
+                self.assertEqual(again["areas"], 1)
+            catalogue = json.loads((target / "Saved Areas/catalogue.json").read_text())
+            self.assertEqual(catalogue[0]["names"], ["Hong Kong", "Hong Kong A", "Hong Kong B"])
+            self.assertTrue(broken.exists())
+            self.assertFalse((target / "osm/tile_broken.json").exists())
+            for spec in data.expected_inputs(cfg):
+                data.validate_input(spec)

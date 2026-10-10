@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 from test_performance import performance_case
-from test_simulation import config, rectangle, simulation, synthetic_baseline, visual, workers
+from test_simulation import config, presentation, rectangle, simulation, synthetic_baseline, workers
 
 from metrosim26.history import build_history, read_continuation, year_to_frame
 from metrosim26.infrastructure import Infrastructure, clear_corridor, generated_index
@@ -420,8 +420,8 @@ class HistoricalTests(unittest.TestCase):
         from unittest.mock import MagicMock
 
         obj = MagicMock()
-        with patch.object(visual, "bpy", MagicMock()):
-            visual._set_object_lifetime(obj, 2010, 2020, 2006)
+        with patch.object(presentation, "bpy", MagicMock()):
+            presentation._set_object_lifetime(obj, 2010, 2020, 2006)
         self.assertEqual(obj.driver_add.return_value.driver.expression, "frame < 5 or frame >= 15")
 
     def test_evidence_content_changes_identity_and_unsupported_extend_rejected(self):

@@ -97,7 +97,7 @@ TIMELINE_START_YEAR = 2006
 HISTORICAL_EVIDENCE_FILE = "historical_evidence.json"
 ```
 
-A relative evidence path is resolved from the repository root, beside `blender.py`. No historical data
+A relative evidence path is resolved from the repository root, beside `metrosim.py`. No historical data
 is bundled or fetched. Leave the filename empty for an explicitly **unknown** past:
 undated features first become visible at the baseline year, not at an invented date.
 An empty historical scene does **not** mean those buildings or roads were absent.

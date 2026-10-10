@@ -178,28 +178,83 @@ def run_job(directory):
     directory = Path(directory).resolve()
     cfg = json.loads((directory / "config.json").read_text(encoding="utf8"))
     cfg["data_mode"] = "OFFLINE"
+    job_started = time.monotonic()
     reporter = Progress(directory / "progress.json", cfg)
     _REPORTER = reporter
     try:
-        grid, baseline, result = prepare_simulation(cfg, destination=directory / "result")
+        if cfg.get("job_action") == "PREFETCH":
+            from metrosim26.data import expected_inputs, prefetch_data
+
+            cfg["missing_inputs"] = sum(not item.path.is_file() for item in expected_inputs(cfg))
+            report_progress("downloading", "Checking and downloading local inputs")
+            if not prefetch_data(cfg):
+                raise RuntimeError(
+                    cfg.get("download_failure_summary", "Some downloads failed.")
+                    + " Retry Download Area; completed files are kept."
+                )
+            reporter.update(
+                phase="cache_ready", message="Data ready. Generate City next.", complete=True
+            )
+            return 0
+        streaming = bool(
+            cfg.get("progressive_build") and cfg.get("historical_mode", "DISABLED") == "DISABLED"
+        )
+
+        def baseline_ready(grid, baseline, result_directory):
+            export_scene(
+                cfg,
+                grid,
+                baseline,
+                {"versions": [], "run_directory": result_directory},
+                directory / "scene",
+                complete=False,
+            )
+
+        if cfg.get("view_mode") == "MAP":
+            from metrosim26.data import build_baseline
+            from metrosim26.workers import Grid
+
+            grid = Grid(cfg["bounds"], cfg["cell_km"])
+            baseline = build_baseline(cfg, grid)
+            result = {"versions": [], "run_directory": str(directory / "result")}
+            if not baseline["buildings"]:
+                reporter.update(
+                    warning="No buildings mapped by OpenStreetMap here. Showing available roads, water and parks."
+                )
+        else:
+            grid, baseline, result = prepare_simulation(
+                cfg,
+                destination=directory / "result",
+                baseline_ready=baseline_ready if streaming else None,
+            )
+
         # Publish only a completed simulation with recorded checksums. Previous complete
         # runs are never overwritten; cancellation leaves this pointer untouched.
         canonical = run_directory(cfg)
         result_directory = Path(result["run_directory"]).resolve()
-        if result_directory.is_relative_to(canonical.resolve()):
+        if cfg.get("view_mode") != "MAP" and result_directory.is_relative_to(canonical.resolve()):
             write_json(
                 canonical / "latest_completed.json",
                 {"directory": str(result_directory.relative_to(canonical.resolve()))},
             )
         report_progress(
             "preparing_scene",
-            "Preparing mesh chunks outside Blender",
+            "Generating outer-ring mesh chunks"
+            if cfg.get("expand_inner_radius_km")
+            else "Preparing mesh chunks outside Blender",
             worker_processes=0,
             broker_pid=None,
             year=None,
             result_directory=str(result_directory),
         )
-        export_scene(cfg, grid, baseline, result, directory / "scene")
+        export_scene(
+            cfg,
+            grid,
+            baseline,
+            result,
+            directory / "scene",
+            append=(directory / "scene" / "manifest.json").is_file(),
+        )
         reporter.update(
             phase="scene_ready",
             message="Calculation and mesh preparation complete",
@@ -207,20 +262,55 @@ def run_job(directory):
             scene_directory=str(directory / "scene"),
         )
         return 0
-    except BaseException:
+    except BaseException as exc:
         error = traceback.format_exc()
         print(error, flush=True)
         reporter.update(
             phase="error",
-            message="Calculation failed; see calculation.log",
+            message=str(exc) or "Calculation failed; see calculation.log",
             error=error,
             complete=False,
             worker_processes=0,
         )
         return 1
     finally:
+        if cfg.get("study_radius_km") and reporter.state.get("phase") in {
+            "scene_ready",
+            "cache_ready",
+        }:
+            save_timing(
+                cfg,
+                cfg.get("job_action", "MAP" if cfg.get("view_mode") == "MAP" else cfg["run_mode"]),
+                time.monotonic() - job_started,
+            )
         reporter.close()
         _REPORTER = None
+
+
+def save_timing(cfg, action, seconds):
+    path = Path(cfg["output_dir"]) / "area_timings.json"
+    try:
+        samples = json.loads(path.read_text())
+        if not isinstance(samples, list):
+            samples = []
+    except (OSError, ValueError):
+        samples = []
+    samples.append(
+        dict(
+            action=action,
+            view_mode=cfg.get("view_mode", "GROWTH"),
+            missing_inputs=cfg.get("missing_inputs", 0),
+            radius_km=cfg["study_radius_km"],
+            center=cfg["study_center"],
+            years=cfg["end_year"] - cfg["base_year"] + 1,
+            seconds=seconds,
+        )
+    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(path, samples[-30:])
+    except OSError as error:
+        print(f"Could not save timing sample: {error}", flush=True)
 
 
 if __name__ == "__main__":

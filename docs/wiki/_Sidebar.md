@@ -1,3 +1,5 @@
-- [Home](Home.md)
-- [FAQ](FAQ.md)
+- [Home](Home)
+- [FAQ](FAQ)
+- [Code guide](Code-guide)
 - [Setup](https://github.com/an-vu/metrosim26#readme)
+- [Data credits](Data-Credits)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from pathlib import Path
@@ -9,205 +10,23 @@ from pathlib import Path
 import numpy as np
 
 from metrosim26.config import timeline_start
+from metrosim26.geometry import land, water
+from metrosim26.geometry.buildings import _building_geometry as _building_geometry
+from metrosim26.geometry.lifetimes import _visual_lifetime_records as _visual_lifetime_records
+from metrosim26.geometry.packets import PacketBatch as PacketBatch
+from metrosim26.geometry.polygons import _oriented_ring as _oriented_ring
+from metrosim26.geometry.polygons import _surface_geometry as _surface_geometry
+from metrosim26.geometry.roads import _road_geometry as _road_geometry
 from metrosim26.runtime import report_progress, write_json
-from metrosim26.workers import mesh_triangles
 
 
-class PacketBatch:
-    """Preserve face geometry while bounding each Blender mesh import."""
-
-    def __init__(
-        self,
-        directory,
-        packets,
-        collection,
-        name,
-        material,
-        max_vertices,
-        lifetime=None,
-        properties=None,
-    ):
-        self.directory, self.packets = directory, packets
-        self.collection, self.name, self.material = collection, name, material
-        self.limit = max(1000, max_vertices)
-        self.lifetime = lifetime
-        self.properties = properties or {}
-        self.vertices, self.faces = [], []
-        self.chunk = 0
-
-    def add(self, vertices, faces):
-        remap = {}
-        for face in faces:
-            if len(self.vertices) + len(face) > self.limit:
-                self.flush()
-                remap = {}
-            indices = []
-            for index in face:
-                if index not in remap:
-                    remap[index] = len(self.vertices)
-                    self.vertices.append(vertices[index])
-                indices.append(remap[index])
-            self.faces.append(indices)
-
-    def flush(self):
-        if not self.faces:
-            return
-        filename = f"mesh_{len(self.packets):06d}.npz"
-        offsets = np.cumsum([0] + [len(face) for face in self.faces], dtype=np.int64)
-        np.savez_compressed(
-            self.directory / filename,
-            vertices=np.asarray(self.vertices, dtype=np.float64),
-            indices=np.asarray([v for face in self.faces for v in face], dtype=np.int32),
-            offsets=offsets,
-        )
-        self.packets.append(
-            dict(
-                file=filename,
-                name=f"{self.name}_{self.chunk:03d}",
-                collection=self.collection,
-                material=self.material,
-                lifetime=self.lifetime,
-                properties=self.properties,
-            )
-        )
-        self.chunk += 1
-        self.vertices, self.faces = [], []
-
-
-def _oriented_ring(ring, counterclockwise=True):
-    points = [(float(p[0]), float(p[1])) for p in ring]
-    if len(points) > 1 and points[0] == points[-1]:
-        points.pop()
-    signed = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(points, points[1:] + points[:1]))
-    if (signed > 0.0) != counterclockwise:
-        points.reverse()
-    return points
-
-
-def _surface_geometry(polygon, elevation_km=0.0):
-    """Pure geometry helper; triangulation preserves multipolygon courtyard holes."""
-    vertices, faces = [], []
-    for triangle in mesh_triangles(polygon):
-        triangle = _oriented_ring(triangle)
-        if len(triangle) != 3:
-            continue
-        start = len(vertices)
-        vertices.extend((x, y, elevation_km) for x, y in triangle)
-        faces.append((start, start + 1, start + 2))
-    return vertices, faces
-
-
-def _building_geometry(polygon, height_m, z0_m=0.0):
-    """Extrude actual footprints, including courtyard walls and a holed roof."""
-    # Centimeter-scale offsets separate flat presentation surfaces without
-    # visibly lifting buildings off the ground.
-    floor = 0.00008 + float(z0_m) / 1000.0
-    roof = floor + max(0.1, float(height_m)) / 1000.0
-    vertices, faces = _surface_geometry(polygon, roof)
-    lower_vertices, lower_faces = _surface_geometry(polygon, floor)
-    offset = len(vertices)
-    vertices.extend(lower_vertices)
-    faces.extend(tuple(offset + i for i in reversed(face)) for face in lower_faces)
-    rings = [(polygon["outer"], True)]
-    rings.extend((hole, False) for hole in polygon.get("holes", []))
-    for ring, counterclockwise in rings:
-        ring = _oriented_ring(ring, counterclockwise)
-        for a, b in zip(ring, ring[1:] + ring[:1]):
-            if a == b:
-                continue
-            offset = len(vertices)
-            vertices.extend(
-                ((a[0], a[1], floor), (b[0], b[1], floor), (b[0], b[1], roof), (a[0], a[1], roof))
-            )
-            faces.append((offset, offset + 1, offset + 2, offset + 3))
-    return vertices, faces
-
-
-def _road_geometry(points, width_km, elevation_km=0.00002):
-    """Flat road strips with bounded miter joins; no cylindrical road tubes."""
-    clean = []
-    for point in points:
-        xy = (float(point[0]), float(point[1]))
-        if not clean or math.dist(clean[-1], xy) > 1e-9:
-            clean.append(xy)
-    if len(clean) < 2:
-        return [], []
-    normals = []
-    for a, b in zip(clean, clean[1:]):
-        length = math.dist(a, b)
-        normals.append((-(b[1] - a[1]) / length, (b[0] - a[0]) / length))
-    half = max(float(width_km), 0.001) * 0.5
-    vertices, faces = [], []
-    for i, (x, y) in enumerate(clean):
-        before = normals[max(0, i - 1)]
-        after = normals[min(i, len(normals) - 1)]
-        mx, my = before[0] + after[0], before[1] + after[1]
-        length = math.hypot(mx, my)
-        if length < 1e-8:
-            mx, my = after
-            extent = half
-        else:
-            mx, my = mx / length, my / length
-            dot = max(0.25, mx * after[0] + my * after[1])
-            extent = min(half / dot, half * 2.0)
-        vertices.extend(
-            (
-                (x + mx * extent, y + my * extent, elevation_km),
-                (x - mx * extent, y - my * extent, elevation_km),
-            )
-        )
-        if i:
-            start = 2 * i
-            faces.append((start - 2, start - 1, start + 1, start))
-    return vertices, faces
-
-
-def _visual_lifetime_records(versions):
-    """Coalesce persistent buildings across infill versions before meshing.
-
-    An unchanged house belongs to one construction/demolition cohort, even if
-    its site received infill many times. This avoids duplicating its mesh once
-    per snapshot while retaining exclusive replacement lifetimes.
-    """
-    records = {}
-    for site in sorted(versions, key=lambda s: (s["start_year"], s["id"], s["version"])):
-        for category in ("buildings", "surfaces"):
-            for item in site.get(category, []):
-                key = (category, item["id"])
-                if key in records:
-                    existing = records[key]
-                    if existing["end_year"] != site["start_year"]:
-                        raise ValueError(f"Noncontiguous or overlapping lifetime for {item['id']}")
-                    if existing[category][0] != item:
-                        raise ValueError(
-                            f"Persistent geometry changed without a new ID: {item['id']}"
-                        )
-                    existing["end_year"] = site.get("end_year")
-                else:
-                    records[key] = {
-                        "id": item["id"],
-                        "version": 0,
-                        "start_year": int(site["start_year"]),
-                        "end_year": site.get("end_year"),
-                        "buildings": [item] if category == "buildings" else [],
-                        "surfaces": [item] if category == "surfaces" else [],
-                        **({"project_id": site["project_id"]} if "project_id" in site else {}),
-                    }
-    return sorted(
-        records.values(),
-        key=lambda record: (
-            record["start_year"],
-            record["end_year"] if record["end_year"] is not None else 99999,
-            record["id"],
-        ),
-    )
-
-
-def export_scene(cfg, grid, baseline, result, directory):
+def export_scene(cfg, grid, baseline, result, directory, *, append=False, complete=True):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    packets = []
-    palette = {}
+    previous = json.loads((directory / "manifest.json").read_text()) if append else {}
+    packets = list(previous.get("packets", []))
+    previous_count = len(packets)
+    palette = dict(previous.get("materials", {}))
     collections = {
         key: key
         for key in (
@@ -215,6 +34,7 @@ def export_scene(cfg, grid, baseline, result, directory):
             "land",
             "future",
             "stage",
+            "ground",
             "observed_roads",
             "local_roads",
             "infrastructure",
@@ -228,7 +48,9 @@ def export_scene(cfg, grid, baseline, result, directory):
         processed += 1
         if time.monotonic() - last_pulse > 1:
             report_progress(
-                "preparing_scene", f"Preparing geometry: {processed:,} records processed"
+                "preparing_scene",
+                f"Preparing geometry: {processed:,} records processed",
+                geometry_records=processed,
             )
             last_pulse = time.monotonic()
 
@@ -236,10 +58,57 @@ def export_scene(cfg, grid, baseline, result, directory):
         palette[name] = {"color": color, "roughness": roughness, "metallic": metallic}
         return name
 
-    def make_batch(collection, name, material, max_vertices, lifetime=None, properties=None):
+    def make_batch(
+        collection,
+        name,
+        material,
+        max_vertices,
+        lifetime=None,
+        properties=None,
+        *,
+        inner_radius=None,
+        weld=False,
+        radial_batches=True,
+    ):
         return PacketBatch(
-            directory, packets, collection, name, material, max_vertices, lifetime, properties
+            directory,
+            packets,
+            collection,
+            name,
+            material,
+            max_vertices,
+            lifetime,
+            properties,
+            cfg.get("study_radius_km"),
+            cfg.get("expand_inner_radius_km", 0) if inner_radius is None else inner_radius,
+            weld=weld,
+            radial_batches=radial_batches,
         )
+
+    def interior(record):
+        inner = cfg.get("expand_inner_radius_km", 0)
+        points = record.get("points") or [
+            point for polygon in record.get("polygons", []) for point in polygon["outer"]
+        ]
+        return bool(
+            inner
+            and points
+            and all(
+                math.hypot(*point) + record.get("width_km", 0) < inner * math.cos(math.pi / 96)
+                for point in points
+            )
+        )
+
+    def observed_order(record):
+        if not cfg.get("progressive_build"):
+            return (0, str(record["id"]))
+        points = record.get("points") or [
+            point for polygon in record.get("polygons", []) for point in polygon["outer"]
+        ]
+        if not points:
+            return (0, str(record["id"]))
+        center = np.mean(points, axis=0)
+        return (math.hypot(*center), str(record["id"]))
 
     first_year = timeline_start(cfg)
     historical = result.get("history")
@@ -253,7 +122,13 @@ def export_scene(cfg, grid, baseline, result, directory):
             if evidence and evidence["historical_coverage"] == "evidence_supported"
             else "observed"
         )
-        key = kind, life, provenance, material
+        key = (
+            kind,
+            life,
+            provenance,
+            material,
+            feature["id"] if cfg.get("view_mode") == "MAP" else None,
+        )
         if key not in observed_batches:
             observed_batches[key] = make_batch(
                 collection,
@@ -263,6 +138,8 @@ def export_scene(cfg, grid, baseline, result, directory):
                 life,
                 dict(
                     provenance=provenance,
+                    feature_id=str(feature["id"]) if cfg.get("view_mode") == "MAP" else "",
+                    feature_kind=kind,
                     input_provenance="observed",
                     historical_coverage=evidence["historical_coverage"]
                     if evidence
@@ -271,6 +148,9 @@ def export_scene(cfg, grid, baseline, result, directory):
             )
         return observed_batches[key]
 
+    from metrosim26.geography import Geography
+
+    geography = Geography(cfg, grid)
     colors = {
         "existing": (0.56, 0.55, 0.52),
         "road": (0.19, 0.21, 0.22),
@@ -281,6 +161,7 @@ def export_scene(cfg, grid, baseline, result, directory):
         "ground": (0.43, 0.46, 0.40),
         "infrastructure": (0.16, 0.31, 0.40),
     }
+    colors.update(cfg.get("palette", {}))
     materials = {
         key: material("MetroSim26_" + key, color, 0.28 if key == "water" else 0.8)
         for key, color in colors.items()
@@ -296,51 +177,87 @@ def export_scene(cfg, grid, baseline, result, directory):
     )
     chunk_size = min(12000, int(cfg.get("mesh_chunk_vertices", 120000)))
     vertical_scale = float(cfg.get("vertical_exaggeration", 1.25))
-    report_progress("preparing_scene", "Preparing OSM buildings")
-    for building in sorted(baseline["buildings"], key=lambda record: record["id"]):
-        pulse()
-        observed = observed_batch(
-            "building", building, collections["baseline"], "OSM_Buildings", materials["existing"]
-        )
-        for polygon in building["polygons"]:
-            observed.add(*_building_geometry(polygon, building["height_m"] * vertical_scale))
-    report_progress("preparing_scene", "Preparing OSM roads")
-    for road in sorted(baseline["roads"], key=lambda record: record["id"]):
-        pulse()
-        if road.get("tunnel", False):
-            continue  # The flat map cannot represent terrain above a tunnel.
-        roads = observed_batch(
-            "road", road, collections["observed_roads"], "OSM_Roads", materials["road"]
-        )
-        elevation = 0.007 if road.get("bridge", False) else 0.00002
-        roads.add(*_road_geometry(road["points"], road["width_km"], elevation))
-    report_progress("preparing_scene", "Preparing land features")
-    for feature in sorted(baseline["land"], key=lambda record: record["id"]):
-        pulse()
-        kind = feature["kind"]
-        if kind in ("water", "park"):
-            land_batch = observed_batch(
-                "land", feature, collections["land"], "OSM_" + kind, materials[kind]
+    if not append:
+        ground = {
+            "outer": [
+                (grid.min_x, grid.min_y),
+                (grid.max_x, grid.min_y),
+                (grid.max_x, grid.max_y),
+                (grid.min_x, grid.max_y),
+            ],
+            "holes": [],
+        }
+        if cfg.get("include_ground", True) or cfg.get("include_ocean"):
+            ground_batch = land.ground_batch(make_batch, materials["ground"], chunk_size)
+            ocean_batch = water.ocean_batch(make_batch, materials["water"], chunk_size)
+            if cfg.get("include_terrain") or cfg.get("include_ocean"):
+                # Resample the complete land surface so an old clipped boundary
+                # cannot survive as a crack. Ocean keeps its existing ring path.
+                geography.inner_radius = 0
+                for sea, points in geography.surface():
+                    pulse()
+                    if sea and cfg.get("include_ocean"):
+                        ocean_batch.add(points, [list(range(len(points)))])
+                    elif cfg.get("include_ground", True):
+                        ground_batch.add(*land.ground_geometry(points, geography))
+            elif cfg.get("include_ground", True):
+                ground_batch.add(*_surface_geometry(ground, -0.00002))
+            ground_batch.flush()
+            ocean_batch.flush()
+        report_progress("preparing_scene", "Preparing OSM buildings")
+        for building in sorted(
+            baseline["buildings"] if cfg.get("include_buildings", True) else [], key=observed_order
+        ):
+            if interior(building):
+                continue
+            pulse()
+            observed = observed_batch(
+                "building",
+                building,
+                collections["baseline"],
+                "OSM_Buildings",
+                materials["existing"],
             )
-            elevation = 0.0 if kind == "water" else -0.000005
-            for polygon in feature["polygons"]:
-                land_batch.add(*_surface_geometry(polygon, elevation))
-    for batch in observed_batches.values():
-        batch.flush()
-    ground = {
-        "outer": [
-            (grid.min_x, grid.min_y),
-            (grid.max_x, grid.min_y),
-            (grid.max_x, grid.max_y),
-            (grid.min_x, grid.max_y),
-        ],
-        "holes": [],
-    }
-    ground_batch = make_batch(
-        collections["stage"], "Flat_Study_Ground", materials["ground"], chunk_size
-    )
-    ground_batch.add(*_surface_geometry(ground, -0.00002))
-    ground_batch.flush()
+            for polygon in building["polygons"]:
+                vertices, faces = _building_geometry(polygon, building["height_m"] * vertical_scale)
+                observed.add(geography.lift(vertices, building=True), faces)
+        report_progress("preparing_scene", "Preparing OSM roads")
+        for road in sorted(
+            baseline["roads"] if cfg.get("include_roads", True) else [], key=observed_order
+        ):
+            if interior(road):
+                continue
+            pulse()
+            if road.get("tunnel", False):
+                continue  # The flat map cannot represent terrain above a tunnel.
+            roads = observed_batch(
+                "road", road, collections["observed_roads"], "OSM_Roads", materials["road"]
+            )
+            elevation = 0.007 if road.get("bridge", False) else 0.00002
+            vertices, faces = _road_geometry(
+                geography.road_points(road["points"]), road["width_km"], elevation
+            )
+            vertices, faces = geography.drape_road(
+                vertices, faces, bridge=road.get("bridge", False)
+            )
+            roads.add(vertices, faces)
+        report_progress("preparing_scene", "Preparing land features")
+        for feature in sorted(baseline["land"], key=observed_order):
+            if interior(feature):
+                continue
+            pulse()
+            kind = feature["kind"]
+            if kind in ("water", "park") and cfg.get(
+                "include_water" if kind == "water" else "include_parks", True
+            ):
+                land_batch = observed_batch(
+                    "land", feature, collections["land"], "OSM_" + kind, materials[kind]
+                )
+                for polygon in feature["polygons"]:
+                    geometry = water.inland_geometry if kind == "water" else land.park_geometry
+                    land_batch.add(*geometry(polygon, geography))
+        for batch in observed_batches.values():
+            batch.flush()
     batches = {}
     base_year = int(cfg["base_year"])
     base_decade = (base_year // 10) * 10
@@ -348,7 +265,9 @@ def export_scene(cfg, grid, baseline, result, directory):
     project_names = {p["project_id"]: p["name"] for p in result.get("projects", [])}
     previous_lifetime = None
     report_progress("preparing_scene", "Preparing future development")
-    for site in versions:
+    for site in (
+        versions if cfg.get("include_buildings", True) or cfg.get("include_roads", True) else []
+    ):
         pulse()
         start, end = int(site["start_year"]), site.get("end_year")
         if end is not None:
@@ -367,7 +286,10 @@ def export_scene(cfg, grid, baseline, result, directory):
                 batch.flush()
             batches = {}
             previous_lifetime = lifetime
-        for building in sorted(site["buildings"], key=lambda record: record["id"]):
+        for building in sorted(
+            site["buildings"] if cfg.get("include_buildings", True) else [],
+            key=lambda record: record["id"],
+        ):
             year = int(building.get("construction_year", start))
             decade = (year // 10) * 10
             material_key = "future_" + str(decade)
@@ -396,7 +318,7 @@ def export_scene(cfg, grid, baseline, result, directory):
                         volume.get("z0_m", 0.0) * vertical_scale,
                     )
                 )
-        for surface in site.get("surfaces", []):
+        for surface in site.get("surfaces", []) if cfg.get("include_roads", True) else []:
             material_key = "future_road" if surface["kind"] == "road" else "parking"
             key = (start, end, material_key, site.get("project_id"))
             if key not in batches:
@@ -415,7 +337,7 @@ def export_scene(cfg, grid, baseline, result, directory):
             batches[key].add(*_surface_geometry(polygon, 0.00007))
     for batch in batches.values():
         batch.flush()
-    for record in result.get("infrastructure", []):
+    for record in result.get("infrastructure", []) if cfg.get("include_roads", True) else []:
         for i, segment in enumerate(record["segments"]):
             batch = make_batch(
                 collections["infrastructure"],
@@ -432,8 +354,17 @@ def export_scene(cfg, grid, baseline, result, directory):
             )
             batch.add(*_surface_geometry({"outer": segment["poly"], "holes": []}, 0.00009))
             batch.flush()
+    if cfg.get("progressive_build"):
+        packets[previous_count:] = sorted(
+            packets[previous_count:],
+            key=lambda packet: (
+                packet["lifetime"][0] if packet["lifetime"] else timeline_start(cfg),
+                packet.get("distance", 0),
+            ),
+        )
     manifest = {
         "schema_version": 1,
+        "complete": complete,
         "cfg": cfg,
         "result_directory": result["run_directory"],
         "grid": {
@@ -442,6 +373,15 @@ def export_scene(cfg, grid, baseline, result, directory):
         },
         "materials": palette,
         "packets": packets,
+        "warnings": [
+            "No coastline found in this area; ocean surface omitted. Inland water is still available."
+        ]
+        if cfg.get("include_ocean") and not geography.segments
+        else [],
+        "height_bounds": [
+            min((p.get("min_z", 0) for p in packets), default=0),
+            max((p.get("max_z", 0.3) for p in packets), default=0.3),
+        ],
     }
     write_json(directory / "manifest.json", manifest)
     return manifest

@@ -35,6 +35,9 @@ def corridor_polygon(a, b, width):
 def clear_corridor(poly, grid, indexes):
     if not poly:
         return False
+    radius = getattr(grid, "study_radius_km", None)
+    if radius and any(x * x + y * y > radius * radius for x, y in poly):
+        return False
     if any(not (grid.min_x <= x <= grid.max_x and grid.min_y <= y <= grid.max_y) for x, y in poly):
         return False
     for index in indexes:
@@ -70,6 +73,7 @@ def generated_index(grid, active, pending):
 class Infrastructure:
     def __init__(self, cfg, grid, baseline, events):
         self.cfg, self.grid, self.baseline, self.events = cfg, grid, baseline, events
+        self.grid.study_radius_km = cfg.get("study_radius_km")
         self.records = []
         self.pressure = np.zeros(grid.shape, dtype=np.int32)
         self.static_index = baseline.get("spatial_index") or prepare_spatial_index(baseline, grid)
