@@ -60,7 +60,7 @@ Defaults under your home folder:
 - Growth import can overlap calculation; future objects have timeline visibility by year.
 - **Pause visible build** pauses import/reveal, not calculation. Chunk-speed controls apply to growth import.
 - Optional projects, infrastructure and historical evidence: [feature guide](docs/evolution.md).
-- `REPLAY` opens compatible completed results. `EXTEND` is not implemented.
+- `REPLAY` opens compatible completed results. `EXTEND` adds years to a completed run.
 
 ## Limits to know
 
@@ -111,3 +111,13 @@ blender --background --factory-startup --python-exit-code 1 --python tests/blend
 - Personal `.code-workspace` and `.vscode/` files are ignored by Git.
 
 [Wiki](https://github.com/an-vu/metrosim26/wiki) · [FAQ](https://github.com/an-vu/metrosim26/wiki/FAQ)
+
+## Extend a saved simulation
+
+- Run `extend.py` in Blender and select a completed run folder.
+- Choose a later end year; only additional years are calculated.
+- Results open in a new scene; the original run stays unchanged.
+- Manual scene edits are not copied into the new scene.
+- A `.blend` alone is not enough; keep the simulation output folder.
+- Check compatibility with `python scripts/extend_run.py PATH --end-year 2096 --check`.
+- See the [roadmap](docs/wiki/Roadmap.md) for planned work.

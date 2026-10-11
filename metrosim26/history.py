@@ -31,7 +31,9 @@ def extra_output_names(cfg):
     names = []
     if evolution_enabled(cfg):
         names += ["projects.json", "events.json", "continuation.json"]
-    elif cfg.get("save_continuation"):
+    elif (
+        cfg.get("save_continuation") or cfg.get("extend_from") or cfg.get("extension_source_sha256")
+    ):
         names.append("continuation.json")
     if cfg.get("enable_infrastructure"):
         names.append("infrastructure.json")
@@ -215,7 +217,7 @@ def file_hash(path):
 def save_continuation(
     directory, cfg, state, initial, projects, infrastructure, ledger, stable_hashes=None
 ):
-    """Versioned complete-year restart contract; execution of EXTEND is deliberately deferred."""
+    """Versioned complete-year restart contract for validated extension."""
     directory = Path(directory)
     parameters = simulation_config(cfg)
     parameters.pop("end_year", None)
@@ -232,7 +234,7 @@ def save_continuation(
         schema_version=1,
         completed_year=state["year"],
         next_year=state["year"] + 1,
-        extension_execution_supported=False,
+        extension_execution_supported=True,
         simulation_parameters=parameters,
         baseline_capacity=initial,
         ledger=ledger,
@@ -248,7 +250,7 @@ def save_continuation(
             "Restore complete version history and active version IDs",
             "Restore demand/capacity ledger, pending phases, infrastructure pressure and corridor reservations",
             "Rebuild derived feedback from completed projects and opened segments; recreate worker cache",
-            "Continue with next_year; prove equivalence against an uninterrupted run before enabling EXTEND",
+            "Continue with next_year using the validated EXTEND loader",
         ],
     )
     atomic_json(directory / "continuation.json", contract)

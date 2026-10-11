@@ -26,3 +26,5 @@
 - `tests/`: offline behavior and geometry checks.
 
 The wiki's editable source lives in `docs/wiki/` in the main repository. GitHub serves the published wiki from its separate wiki Git repository; a local wiki checkout is only needed when publishing.
+
+- [Roadmap](Roadmap.md)

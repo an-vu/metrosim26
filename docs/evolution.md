@@ -145,7 +145,7 @@ is frame 71. Future demand still starts at `BASE_YEAR`, independently of that ma
 Evidence content is hashed into run identity; keep the evidence file available for
 AUTO/REPLAY. Scene properties describe the historical uncertainty and fictional future.
 
-## Files and continuation groundwork
+## Files and continuation
 
 Within the completed run's `simulation/` directory:
 
@@ -169,10 +169,24 @@ cumulative demand, capacity additions, active versions (including redevelopment 
 project commitments, infrastructure pressure, and all geometry needed to rebuild
 reservations and bounded feedback. `read_continuation()` validates the bundle.
 
-**EXTEND is not implemented or accepted as a run mode yet.** Changing `END_YEAR`
-still creates a new run. The contract deliberately says
-`extension_execution_supported: false`; it is groundwork for a later restore path
-that must prove split-run versus uninterrupted-run equivalence before being enabled.
+**EXTEND is supported for completed compatible runs.** Set `RUN_MODE = "EXTEND"`,
+`EXTEND_FROM` to the source run (or its `simulation/` directory), and a later
+`END_YEAR`. All other model settings must match, including optional layers and
+historical evidence. Source checksums are verified before restoration. New contracts
+declare `extension_execution_supported: true`; validated older contracts remain
+readable. Ordinary schema-3 Omaha runs can reconstruct the ledger without a contract.
+
+The loader restores the last annual grids, active versions, cumulative demand and
+capacity, committed project phases, and infrastructure pressure/reservations. Planning
+caches are rebuilt lazily; earlier years are copied, not recalculated. Historical
+states are retained. Extension writes an isolated result and preserves the source.
+Tests compare split versus uninterrupted yearly files, versions, metrics, events,
+and geometry, including repeated extensions and spawned planning workers.
+
+Blender builds a new scene containing the full extended timeline. Updating an existing
+scene in place and resuming an interrupted partial run remain unsupported. Keep the
+original `EXTEND_FROM` and new `END_YEAR` when switching to REPLAY. To extend a second
+time, point `EXTEND_FROM` at the completed extension. See README for examples.
 
 Run the offline tests with `python -m unittest discover -s tests -v`. They cover
 deterministic projects/phases, serial versus spawned-worker outputs, capacity ledgers,

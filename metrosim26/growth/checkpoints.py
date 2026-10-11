@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +17,7 @@ from metrosim26.config import (
 )
 from metrosim26.data import (
     atomic_npz,
+    replace_checkpoint,
 )
 from metrosim26.history import (
     extra_output_names,
@@ -55,7 +55,7 @@ def save_summary_csv(path, rows):
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
-    os.replace(temp_path, path)
+    replace_checkpoint(temp_path, path)
 
 
 def load_simulation(sim_dir, cfg, grid):

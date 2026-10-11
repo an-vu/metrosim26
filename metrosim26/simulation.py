@@ -62,6 +62,10 @@ from metrosim26.workers import make_site_plan as make_site_plan
 def prepare_simulation(cfg, *, destination=None, baseline_ready=None):
     """Pure calculation orchestration; also usable from a standalone NumPy process."""
     validate_config(cfg)
+    if cfg["run_mode"].upper() == "EXTEND":
+        from metrosim26.continuation import extend_simulation
+
+        return extend_simulation(cfg, destination=destination)
     preparation_started = time.perf_counter()
     grid = Grid(tuple(cfg["bounds"]), cfg["cell_km"])
     directory = run_directory(cfg)

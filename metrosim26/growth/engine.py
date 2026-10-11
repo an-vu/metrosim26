@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import time
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
@@ -41,9 +42,9 @@ from metrosim26.workers import (
 )
 
 
-def run_simulation(cfg, grid, baseline, sim_dir):
+def run_simulation(cfg, grid, baseline, sim_dir, *, resume=None):
     with _PlanningCache(cfg, grid, baseline) as cache:
-        result = _run_simulation(cfg, grid, baseline, sim_dir, cache)
+        result = _run_simulation(cfg, grid, baseline, sim_dir, cache, resume=resume)
     report_progress(
         "simulation", "Simulation complete; finalizing results", worker_processes=0, broker_pid=None
     )
@@ -62,7 +63,17 @@ def run_simulation(cfg, grid, baseline, sim_dir):
                 evolution_enabled(cfg) or cfg.get("save_continuation")
             ) and saved_baseline.is_file():
                 shutil.copyfile(saved_baseline, Path(tmp) / "baseline.npz")
-            run_simulation(serial_cfg, grid, baseline, tmp)
+            if resume is not None:
+                events_path = Path(sim_dir) / "events.json"
+                if cfg.get("historical_mode") == "EVIDENCE" and events_path.is_file():
+                    shutil.copyfile(events_path, Path(tmp) / "events.json")
+                for state in resume["result"]["states"]:
+                    if state["year"] >= cfg["base_year"]:
+                        shutil.copyfile(
+                            Path(sim_dir) / f"{state['year']}.npz",
+                            Path(tmp) / f"{state['year']}.npz",
+                        )
+            run_simulation(serial_cfg, grid, baseline, tmp, resume=resume)
             for path in sorted(Path(tmp).iterdir()):
                 if path.read_bytes() != (Path(sim_dir) / path.name).read_bytes():
                     raise AssertionError("Serial/parallel checkpoint mismatch: " + path.name)
@@ -72,7 +83,7 @@ def run_simulation(cfg, grid, baseline, sim_dir):
     return result
 
 
-def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
+def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache, *, resume=None):
     """Compute/save annual states without bpy, timers, threads or wall-clock input."""
     sim_dir = Path(sim_dir)
     sim_dir.mkdir(parents=True, exist_ok=True)
@@ -82,7 +93,11 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
         raise ValueError(
             "This growth-only model requires nonnegative annual scenario growth rates."
         )
-    initial = estimate_baseline_capacity(cfg, grid, baseline)
+    initial = (
+        resume["result"]["baseline_capacity"]
+        if resume is not None
+        else estimate_baseline_capacity(cfg, grid, baseline)
+    )
     baseline.setdefault("metadata", {})["scenario_capacity_baseline"] = initial
     baseline["metadata"]["developed_area_metric"] = (
         "Approximate developed-cell envelope in km2, reduced by water/park fractions; not observed impervious area."
@@ -116,7 +131,37 @@ def _run_simulation(cfg, grid, baseline, sim_dir, plan_cache):
         Infrastructure(cfg, grid, baseline, events) if cfg.get("enable_infrastructure") else None
     )
     continuation_hashes = {}
-    for year in range(cfg["base_year"], cfg["end_year"] + 1):
+    first_year = cfg["base_year"]
+    if resume is not None:
+        restored = deepcopy(resume)
+        previous = restored["result"]
+        states = [s for s in previous["states"] if s["year"] >= cfg["base_year"]]
+        versions, summary = previous["versions"], previous["summary"]
+        final = states[-1]
+        urban, arch = final["urban"].copy(), final["arch"].copy()
+        active = {s["id"]: s for s in final["sites"]}
+        first_year = final["year"] + 1
+        ledger = restored["ledger"]
+        households, jobs = ledger["households"], ledger["jobs"]
+        free_housing, free_jobs = ledger["free_housing"], ledger["free_jobs"]
+        unmet_housing, unmet_jobs = ledger["unmet_housing"], ledger["unmet_jobs"]
+        cumulative_housing_demand = ledger["cumulative_housing_demand"]
+        cumulative_job_demand = ledger["cumulative_job_demand"]
+        cumulative_housing_served = ledger["cumulative_housing_served"]
+        cumulative_jobs_served = ledger["cumulative_jobs_served"]
+        cumulative_housing_added = ledger["cumulative_housing_added"]
+        cumulative_jobs_added = ledger["cumulative_jobs_added"]
+        if evolution_enabled(cfg):
+            events[:] = previous["events"]
+            snapshot = restored["contract"]["projects"]
+            projects.records = {p["project_id"]: p for p in snapshot["projects"]}
+            projects.pending = snapshot["pending_sites"]
+            projects.starts = {int(k): v for k, v in snapshot["starts_by_year"].items()}
+            if infrastructure is not None:
+                snapshot = restored["contract"]["infrastructure"]
+                infrastructure.records = snapshot["infrastructure"]
+                infrastructure.pressure = np.asarray(snapshot["pressure_years"], dtype=np.int32)
+    for year in range(first_year, cfg["end_year"] + 1):
         if evolution_enabled(cfg):
             baseline = (
                 projects.feedback(source_baseline)

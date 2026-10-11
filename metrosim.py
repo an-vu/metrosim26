@@ -70,7 +70,10 @@ def main() -> None:
         if watcher is not None and bpy.app.timers.is_registered(watcher):
             bpy.app.timers.unregister(watcher)
         previous._cancel_on_exit()
-        if getattr(previous, "_REGISTERED", False):
+        if getattr(previous, "_REGISTERED", False) or any(
+            getattr(cls, "is_registered", False)
+            for cls in getattr(previous, "REGISTERED_CLASSES", ())
+        ):
             import atexit
 
             settings = getattr(bpy.context.scene, "metrosim26_setup", None)
@@ -102,7 +105,8 @@ def main() -> None:
                     and getattr(value, "is_registered", False)
                 )
             for cls in reversed(classes):
-                bpy.utils.unregister_class(cls)
+                if getattr(cls, "is_registered", False):
+                    bpy.utils.unregister_class(cls)
     for name in (
         "regions.omaha_council_bluffs",
         "geometry.terrain",
@@ -130,6 +134,7 @@ def main() -> None:
         "growth.checkpoints",
         "growth.engine",
         "simulation",
+        "continuation",
         "geometry.polygons",
         "geometry.buildings",
         "geometry.roads",

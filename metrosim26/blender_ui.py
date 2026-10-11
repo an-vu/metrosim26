@@ -551,7 +551,8 @@ def open_setup(cfg, reset=True):
         bpy.app.handlers.load_pre.append(_cancel_on_load)
     if not _REGISTERED:
         for cls in REGISTERED_CLASSES:
-            bpy.utils.register_class(cls)
+            if not getattr(cls, "is_registered", False):
+                bpy.utils.register_class(cls)
         bpy.types.Scene.metrosim26_setup = bpy.props.PointerProperty(type=METROSIM26_PG_setup)
         atexit.register(_cancel_on_exit)
         _REGISTERED = True
@@ -589,3 +590,21 @@ if bpy is not None:
     REGISTERED_CLASSES = (METROSIM26_PG_setup, *OPERATOR_CLASSES, METROSIM26_PT_status)
 else:
     REGISTERED_CLASSES = ()
+
+
+def _register_extension_operator():
+    # Operators need not be exposed by their Python class name on bpy.types.
+    # The class itself records registration even when that attribute is absent.
+    if not getattr(METROSIM26_OT_extend, "is_registered", False):
+        bpy.utils.register_class(METROSIM26_OT_extend)
+
+
+def show_extension_dialog():
+    """Register the reusable extension control without launching a calculation."""
+    assert bpy is not None
+    _register_extension_operator()
+    bpy.ops.metrosim26.extend_saved_run("INVOKE_DEFAULT")
+
+
+if bpy is not None:
+    METROSIM26_OT_extend = OPERATOR_CLASSES[0]

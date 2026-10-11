@@ -93,7 +93,7 @@
 - Cancel stops the job and removes its partial imported scene; completed downloads and older scenes stay saved.
 - Canceling a reveal cleans up its temporary objects/materials too.
 - `REPLAY` opens compatible completed results. Interrupted simulations do not resume from their last year.
-- `EXTEND` is not implemented.
+- `EXTEND` adds years to a completed compatible run; use `extend.py` in Blender.
 
 ## Why isn't the GPU or every CPU core busy?
 
@@ -118,3 +118,10 @@
 - Rerun it after edits. New File should not require restarting Blender.
 - Keep downloads separately or select their existing folder in Storage.
 - A custom worker interpreter must use Blender-compatible NumPy.
+
+## Can I extend a completed simulation?
+
+- Run `extend.py`, choose the saved run folder and a later end year.
+- Only new years are calculated; Blender imports the full timeline into a new scene.
+- Original results stay unchanged; manual scene edits are not copied.
+- This does not resume a cancelled partial run.

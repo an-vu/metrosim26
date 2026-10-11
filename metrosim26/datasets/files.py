@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,7 +35,7 @@ def atomic_json(path, data, compact=False):
         else:
             json.dump(data, out, sort_keys=True, indent=2, default=_json_default, allow_nan=False)
         out.write("\n")
-    os.replace(tmp, path)
+    replace_checkpoint(tmp, path)
 
 
 def atomic_npz(path, **arrays):
@@ -43,7 +44,7 @@ def atomic_npz(path, **arrays):
     tmp = path.with_name(path.name + ".tmp")
     with tmp.open("wb") as out:
         np.savez_compressed(out, **arrays)
-    os.replace(tmp, path)
+    replace_checkpoint(tmp, path)
 
 
 def _data_signature(value):
@@ -71,3 +72,15 @@ class InputFile:
     state: str = ""
     query: str = ""
     tile_id: int = -1
+
+
+def replace_checkpoint(temporary, destination):
+    """Allow brief Windows reader/scanner locks without losing a completed checkpoint."""
+    for attempt in range(5):
+        try:
+            os.replace(temporary, destination)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.02 * 2**attempt)

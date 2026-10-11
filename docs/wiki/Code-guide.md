@@ -70,6 +70,8 @@
 - `planning.py`: parallel planning cache and worker coordination.
 - `engine.py`: annual infill → redevelopment → expansion decisions.
 - `checkpoints.py`: saved states, summaries and replay validation.
+- `continuation.py`: validate completed runs and restore state to calculate additional years.
+- `extend.py`: open the saved-run extension dialog in Blender.
 - `workers.py` remains the process entry point and footprint/collision helper API.
 - `projects.py`, `infrastructure.py`, `history.py`: separate optional features.
 - `regions/`: local inputs; worldwide map code stays universal.

@@ -202,6 +202,8 @@ class SceneImport:
         )
         scene["seed"] = int(cfg["seed"])
         scene["configuration_json"] = json.dumps(cfg, sort_keys=True)
+        scene["metrosim26_saved_run"] = str(Path(cfg["run_directory"]) / "simulation")
+        scene["metrosim26_link_version"] = 1
         scene.unit_settings.system = "METRIC"
         scene.unit_settings.scale_length = 1000.0
         scene.unit_settings.length_unit = "KILOMETERS"

@@ -28,12 +28,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def check_launcher():
+    ui._register_extension_operator()
     for _ in range(2):
         runpy.run_path(str(ROOT / "metrosim.py"), run_name="__main__")
         assert bpy.context.scene.metrosim26_setup.palette_preset == "NATURAL"
         assert bpy.context.scene.metrosim26_setup.cache_dir
         assert bpy.context.scene.metrosim26_setup.output_dir
-        assert len(ui.REGISTERED_CLASSES) == 11
+        assert len(ui.REGISTERED_CLASSES) == 12
         assert bpy.ops.metrosim26.preview_area() == {"FINISHED"}
         assert any(o.get("metrosim26_area_preview") for o in bpy.context.scene.objects)
         bpy.context.scene.metrosim26_setup.radius = 3.5

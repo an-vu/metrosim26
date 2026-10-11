@@ -245,7 +245,51 @@ def make_operator_types(*, get_run, setup_config, start_blender_job, storage_pat
             context.scene.unit_settings.scale_length = 1000
             return {"FINISHED"}
 
+    class METROSIM26_OT_extend(bpy.types.Operator):
+        bl_idname = "metrosim26.extend_saved_run"
+        bl_label = "Extend Saved Run"
+
+        # Explicit values are required because this module uses postponed annotations.
+        __annotations__ = {
+            "source": bpy.props.StringProperty(name="Saved run folder", subtype="DIR_PATH"),
+            "end_year": bpy.props.IntProperty(name="Extend through", default=2096, min=1),
+        }
+
+        def invoke(self, context, event):
+            from metrosim26.continuation import scene_source, source_directory
+
+            self.source = scene_source(context.scene)
+            if self.source:
+                try:
+                    directory = source_directory(bpy.path.abspath(self.source))
+                    metadata = json.loads((directory / "metadata.json").read_text(encoding="utf8"))
+                    self.end_year = metadata["end_year"] + 20
+                except (OSError, ValueError, KeyError):
+                    pass  # Keep the missing path visible so the user can locate the moved run.
+            return context.window_manager.invoke_props_dialog(self, width=520)
+
+        def draw(self, context):
+            self.layout.label(text="Choose a completed run folder (not a .blend file).")
+            self.layout.prop(self, "source")
+            self.layout.prop(self, "end_year")
+            self.layout.label(text="Original settings are restored automatically.")
+            self.layout.label(text="Results are imported into a new scene; originals are retained.")
+
+        def execute(self, context):
+            from metrosim26.continuation import extension_config
+
+            try:
+                if not self.source.strip():
+                    raise ValueError("Select the saved simulation or run folder first.")
+                cfg = extension_config(bpy.path.abspath(self.source), self.end_year)
+                start_blender_job(cfg)
+            except (OSError, ValueError, KeyError, RuntimeError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            return {"FINISHED"}
+
     return (
+        METROSIM26_OT_extend,
         METROSIM26_OT_cancel,
         METROSIM26_OT_clean_scene,
         METROSIM26_OT_camera_view,

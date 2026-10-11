@@ -145,6 +145,8 @@ def draw_status(
         clean.operator("metrosim26.consolidate_data")
         clean.operator("metrosim26.clean_scene")
         clean.operator("metrosim26.clean_jobs")
+    if run is None or not run.active:
+        layout.operator("metrosim26.extend_saved_run")
     if run is None:
         layout.label(text="Preview area, prepare data, then generate.")
         return

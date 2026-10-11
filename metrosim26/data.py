@@ -30,6 +30,7 @@ from metrosim26.datasets.files import _data_signature as _data_signature
 from metrosim26.datasets.files import _file_sha256 as _file_sha256
 from metrosim26.datasets.files import atomic_json as atomic_json
 from metrosim26.datasets.files import atomic_npz as atomic_npz
+from metrosim26.datasets.files import replace_checkpoint as replace_checkpoint
 from metrosim26.datasets.inputs import _osm_query as _osm_query
 from metrosim26.datasets.inputs import expected_inputs as expected_inputs
 from metrosim26.datasets.inputs import fixed_osm_inputs as fixed_osm_inputs

@@ -68,6 +68,7 @@ class _PlanningCache(dict):
         self.directory = None
         self.error_file = None
         self.started = time.perf_counter()
+        self.years_run = 0
         self.batch_size = max(1, int(cfg.get("parallel_batch_size", 32)))
         self.counts = {"cache_hits": 0, "serial_plans": 0, "parallel_plans": 0, "batches": 0}
         self.recent_costs = []
@@ -194,7 +195,7 @@ class _PlanningCache(dict):
                     "Pool not started: available batches were too small/cheap to justify startup."
                 )
             elapsed = time.perf_counter() - self.started
-            years = self.cfg["end_year"] - self.cfg["base_year"] + 1
+            years = max(1, self.years_run)
             print(f"Simulation total (including worker startup/shutdown): {elapsed:.3f} s")
             print(f"Average/saved year: {elapsed / years:.3f} s | {self.counts}")
 
@@ -271,6 +272,7 @@ class _PlanningCache(dict):
         return result
 
     def year_start(self):
+        self.years_run += 1
         self.year_started = time.perf_counter()
         self.seconds = dict.fromkeys(self.seconds, 0.0)
 
